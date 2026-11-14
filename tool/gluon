@@ -52,7 +52,7 @@ esac
 LOG_DIR="$GLUON_HOME/logs"
 LOG="$LOG_DIR/launch-$appid.log"
 WINE_LOG="$LOG_DIR/wine-$appid.log"
-mkdir -p "$LOG_DIR"
+[ -d "$LOG_DIR" ] || mkdir -p "$LOG_DIR" || exit 1
 
 # Keep Steam's tracked PID while registering it as a macOS application. Steam
 # first sends that PID a Cocoa quit request, which a shell cannot receive.
@@ -92,10 +92,14 @@ for a in "$@"; do
     n=$((n + 1))
     log "  argv[$n] = $a"
 done
-log "  cwd = $(pwd)"
-env | grep -E '^(Steam|STEAM_|SteamApp|SteamGame|GLUON_|WINE|PROTON_)' | sort | while IFS= read -r line; do
-    log "  env $line"
-done
+log "  cwd = $PWD"
+if [ "${GLUON_LOG_ENV:-0}" = 1 ]; then
+    while IFS= read -r name; do
+        case "$name" in
+            Steam*|STEAM_*|GLUON_*|WINE*|PROTON_*) log "  env $name=${!name}" ;;
+        esac
+    done < <(compgen -e)
+fi
 unset log_timestamp
 
 source_root="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
@@ -492,8 +496,10 @@ keep_awake() {
 }
 
 printf '==== %s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$exe" >> "$WINE_LOG"
-started=$(date +%s)
-log_start=$(wc -l < "$WINE_LOG")
+started=$SECONDS
+# Get the byte offset without reading all earlier sessions.
+log_start=$(/usr/bin/stat -f %z "$WINE_LOG" 2>/dev/null) || log_start=$(/usr/bin/stat -c %s "$WINE_LOG" 2>/dev/null)
+case "$log_start" in ''|*[!0-9]*) log_start=0 ;; esac
 
 if [ "$kind" = proton ]; then
     # The tool creates the prefix, waits for an earlier session and returns when the game exits.
@@ -609,7 +615,7 @@ else
         rm -f "$game_log" "$game_out"
     fi
     # Wine returns as soon as a GUI program has started; wait for the prefix to go idle.
-    log "  program launcher returned (exit status $status, $(( $(date +%s) - started ))s since start)"
+    log "  program launcher returned (exit status $status, $((SECONDS - started))s since start)"
     if [ -n "$game_session" ]; then
         # Child launchers can leave a running game after their first process exits.
         # Preserve that session while measuring the Wine service teardown tail.
@@ -622,7 +628,7 @@ else
         fi
     fi
 fi
-elapsed=$(( $(date +%s) - started ))
+elapsed=$((SECONDS - started))
 log "  session ended (exit status $status, ${elapsed}s)"
 
 # A game that dies right after starting would otherwise just vanish. Say so, with the
@@ -632,7 +638,7 @@ log "  session ended (exit status $status, ${elapsed}s)"
 crash_lines='err:|error|assert|Unhandled|fatal'
 [ -z "$bundle" ] || crash_lines='assert|Unhandled|fatal'
 if [ -n "$game_session" ] && { [ "$status" -ne 0 ] || [ -n "$bundle" ]; } && [ "$elapsed" -lt 90 ]; then
-    reason="$(tail -n +"$((log_start + 1))" "$WINE_LOG" \
+    reason="$(tail -c +"$((log_start + 1))" "$WINE_LOG" \
         | grep -a -E "$crash_lines" \
         | grep -a -v -E 'try_map_free_area|winediag|winebth|xalia|vrclient|Error while copying' \
         | tail -1 | cut -c1-160)"

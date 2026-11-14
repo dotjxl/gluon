@@ -144,7 +144,7 @@ bool gluon_cloud_ready(uint32_t appid) {
     char key[16]; snprintf(key, sizeof(key), "%u", appid);
     bool ready = false;
     pthread_mutex_lock(&guard_lock);
-    if (!unchanged() && (helper("--index", NULL) || !load_catalogue())) goto out;
+    if (!unchanged() && !load_catalogue() && (helper("--index", NULL) || !load_catalogue())) goto out;
     cJSON *apps = cJSON_GetObjectItemCaseSensitive(catalogue, "apps");
     cJSON *app = cJSON_GetObjectItemCaseSensitive(apps, key);
     // Uninstalled games still need a compatibility tool for the Install button.
@@ -168,8 +168,8 @@ bool gluon_cloud_ready(uint32_t appid) {
                 cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(app, "ready"));
     }
     if (!ready) {
-        // Retry busy Wine sessions, but do not repeatedly copy a failed backup
-        // on each UI query. A changed layout or a Steam restart allows recovery.
+        // Retry transient Wine or metadata changes. Stable backup failures wait
+        // until the inputs change or Steam restarts.
         if (result != 75) {
             if (!failures) failures = cJSON_CreateObject();
             cJSON *copy = failure_watch(app);

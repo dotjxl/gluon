@@ -21,6 +21,7 @@ import uuid
 from . import runtime, steam, vdf
 
 DYLIB = "gluon-steamplay.dylib"
+RUNTIME_VALIDATION = "runtime-signatures-v1"
 INSERT = "DYLD_INSERT_LIBRARIES"
 CONTROLLER = "SDL_JOYSTICK_BLACKLIST_DEVICES"
 LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
@@ -44,7 +45,10 @@ def _run(*args):
 def _json(path):
     if path.is_symlink():
         raise SteamPlayError("refusing symlink: " + str(path))
-    return json.loads(path.read_text())
+    value = json.loads(path.read_text())
+    if not isinstance(value, dict):
+        raise SteamPlayError("expected a JSON object in " + str(path))
+    return value
 
 
 def _atomic(path, data):
@@ -264,16 +268,36 @@ class Installation:
 
     def payload_check(self):
         manifest = _json(self.payload / "payload.json")
-        if manifest.get("schema") != 1 or not manifest.get("files") or not manifest.get("builds"):
+        files = manifest.get("files")
+        if manifest.get("schema") != 1 or not isinstance(files, dict) or not files:
             raise SteamPlayError("incomplete Steam Play payload")
-        for name, digest in manifest["files"].items():
+        for name, digest in files.items():
             path = self.payload / name
             if (Path(name).is_absolute() or ".." in Path(name).parts or path.is_symlink()
                     or not path.is_file() or _digest(path) != digest):
                 raise SteamPlayError("Steam Play payload failed verification: " + name)
-        for name in (DYLIB, "appinfo", "tools", "builds", "run", "valve-packages.manifest"):
-            if name not in manifest["files"]:
+        for name in (DYLIB, "appinfo", "tools", "run", "valve-packages.manifest"):
+            if name not in files:
                 raise SteamPlayError("missing Steam Play payload file: " + name)
+        mode = manifest.get("compatibility")
+        if mode == RUNTIME_VALIDATION:
+            profiles = manifest.get("profiles")
+            discovered = {path.relative_to(self.payload).as_posix() for path in
+                          (self.payload / "signatures/macos.arm64").glob("*.json")}
+            if (not isinstance(profiles, list) or not profiles
+                    or not all(isinstance(name, str) and name in files for name in profiles)
+                    or discovered != set(profiles)):
+                raise SteamPlayError("missing or unverified Steam signature profiles")
+            try:
+                build = client_build(self.root)
+            except SteamPlayError:
+                client = self.root / "Steam.AppBundle/Steam/Contents/MacOS/steamclient.dylib"
+                if not client.is_file():
+                    raise
+                build = "unknown"
+            return manifest, build
+        if mode is not None or not isinstance(manifest.get("builds"), dict) or "builds" not in files:
+            raise SteamPlayError("unrecognized Steam Play compatibility policy")
         build = client_build(self.root)
         if build not in manifest["builds"]:
             raise SteamPlayError("unsupported Steam build %s; no Steam changes made. Install an updated Gluon payload" % build)
@@ -383,9 +407,17 @@ class Installation:
             self._foreign(app, previous)
             self._tool_check()
             before = _tree(app)
-            if previous and before == previous["installed"] and previous["payload"] == manifest:
+            if (previous and before == previous["installed"] and previous["payload"] == manifest
+                    and previous.get("plist", {}).get("LSEnvironment", {})
+                    .get("GLUON_STEAMPLAY_PAYLOAD") == str(self.payload)):
                 self.system.verify(app)
                 self.system.register(app)
+                # Steam updates its shared client independently of Steam.app.
+                # Revalidate the build above and refresh the receipt even when
+                # the injected bundle and payload need no replacement.
+                if previous["build"] != build:
+                    previous["build"] = build
+                    _write_json(self.state, data)
                 return ["Steam Play is current at " + str(app)]
             if previous and before != previous["installed"] and not self._owned_drift(app, before, previous):
                 # Only a newly Valve-signed bundle may replace the restoration baseline.
@@ -485,8 +517,60 @@ class Installation:
             current = app.is_dir() and _tree(app) == record["installed"]
             try:
                 manifest, build = self.payload_check()
-                current = current and record["payload"] == manifest and record["build"] == build
-            except (SteamPlayError, OSError, ValueError):
-                current = False
-            lines.append("%s: %s" % (name, "installed; hook activation must be checked in steamplay.log" if current else "outdated or unsupported; quit Steam and run gluon repair"))
+                dynamic = manifest.get("compatibility") == RUNTIME_VALIDATION
+                current = current and record["payload"] == manifest and (dynamic or record["build"] == build)
+            except (SteamPlayError, OSError, ValueError) as error:
+                lines.append("%s: %s" % (name, error))
+                continue
+            if current and dynamic:
+                lines.append("%s: Steam build %s · %s" % (name, build, self.client_status()))
+            elif dynamic and record["payload"] != manifest:
+                lines.append("%s: Gluon update staged; applies after Steam and Wine close" % name)
+            else:
+                lines.append("%s: %s" % (name, "installed; hook activation must be checked in steamplay.log" if current else "outdated or unsupported; quit Steam and run gluon repair"))
         return lines or ["Steam Play is not installed"]
+
+    def client_status(self):
+        states = {
+            "checking": "checking client compatibility",
+            "ready": "compatibility active",
+            "unsupported": "client validation failed; see steamplay.log",
+            "incomplete": "client hooks incomplete; see steamplay.log",
+            "client-only": "client hooks active; UI validation failed; see steamplay.log",
+        }
+        try:
+            pid, token, state = (self.home / "steamplay/client-session").read_text().split()
+            if not pid.isdecimal() or int(pid) <= 1 or len(token) != 16:
+                raise ValueError("invalid client session")
+            running = subprocess.run(["pgrep", "-x", "steam_osx"],
+                                     capture_output=True, text=True, timeout=5)
+            if running.returncode == 0 and pid in running.stdout.splitlines():
+                return states[state]
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+            pass
+        return "installed; waiting for Steam startup validation"
+
+    def restore_after_update(self, *, dry_run=False):
+        """Apply a staged integration or repair a clean Steam replacement while idle."""
+        data = self.receipt()
+        if data.get("transaction") or len(data["apps"]) != 1:
+            return []
+        name, record = next(iter(data["apps"].items()))
+        if record.get("payload", {}).get("compatibility") != RUNTIME_VALIDATION:
+            return []
+        app = Path(name)
+        try:
+            environment = _plist(app).get("LSEnvironment", {})
+            installed = record.get("plist", {}).get("LSEnvironment", {})
+            staged = installed.get("GLUON_STEAMPLAY_PAYLOAD") != str(self.payload)
+            clean = not environment.get(INSERT) and not os.path.lexists(app / "Contents/MacOS" / DYLIB)
+            if not (staged or clean) or steam.is_running():
+                return []
+            self.idle()
+        except (SteamPlayError, steam.SteamError, OSError):
+            return []
+        if dry_run:
+            return ["would check Valve signature and repair " + name]
+        # install() rechecks idle state, payload, ownership, and Valve's signature
+        # under the normal bundle lock before changing anything.
+        return self.install(name)

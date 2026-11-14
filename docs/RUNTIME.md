@@ -2,8 +2,9 @@
 
 This replaces the useful launcher/runtime work from PR #1 while retaining native
 Steam Play. It does not restore the metadata agent, depot rewrites or experimental
-Steam probe. For an old 32-bit Mac title with a Windows build, select Gluon in
-Steam's Compatibility settings; Steam selects its Windows depots through the tool.
+Steam probe. For a Mac title marked legacy by Steam with a Windows launch, Gluon is selected
+automatically by default. Steam downloads the Windows depots through its usual
+update flow. A game's Compatibility settings can override the default.
 
 ## Game sessions and responsiveness
 

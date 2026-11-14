@@ -2,6 +2,7 @@
 #include "gluon_settings.h"
 #include "nativeplatform.h"
 #include "../util/file.h"
+#include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
@@ -13,7 +14,6 @@
 #include <unistd.h>
 
 static atomic_int g_mac32 = -1;
-static atomic_int g_effective_mac32 = -1;
 static pthread_mutex_t g_settings_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int preference_path(char *path, size_t cap) {
@@ -28,30 +28,31 @@ bool gluon_settings_mac32(void) {
     if (value >= 0) return value != 0;
     pthread_mutex_lock(&g_settings_lock);
     if ((value = atomic_load(&g_mac32)) < 0) {
-        char path[PATH_MAX], bytes[3] = {0};
-        int fd = preference_path(path, sizeof path) ? open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC) : -1;
-        ssize_t len = fd >= 0 ? read(fd, bytes, sizeof bytes) : -1;
-        if (fd >= 0) close(fd);
-        value = len == 2 && bytes[0] == '1' && bytes[1] == '\n';
+        value = gluon_settings_read_mac32();
         atomic_store(&g_mac32, value);
     }
     pthread_mutex_unlock(&g_settings_lock);
     return value != 0;
 }
 
+bool gluon_settings_read_mac32(void) {
+    char path[PATH_MAX], bytes[3] = {0};
+    if (!preference_path(path, sizeof path)) return false;
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0) return errno == ENOENT;
+    struct stat info;
+    ssize_t len = fstat(fd, &info) == 0 && S_ISREG(info.st_mode) && info.st_uid == getuid()
+        ? read(fd, bytes, sizeof bytes) : -1;
+    close(fd);
+    return len == 2 && bytes[0] == '1' && bytes[1] == '\n';
+}
+
 bool gluon_settings_mac32_effective(void) {
-    int value = atomic_load(&g_effective_mac32);
-    if (value >= 0) return value != 0;
-    int initial = gluon_settings_mac32(), unset = -1;
-    atomic_compare_exchange_strong(&g_effective_mac32, &unset, initial);
-    return atomic_load(&g_effective_mac32) != 0;
+    return gluon_settings_mac32();
 }
 
 int gluon_settings_command(uint32_t appid, const char *name) {
     if (appid || !name || (strcmp(name, GLUON_MAC32_ON) && strcmp(name, GLUON_MAC32_OFF))) return 0;
-    // Freeze launch policy before persisting a new preference. Steam caches app
-    // availability across CEF windows, so a restart applies it consistently.
-    (void)gluon_settings_mac32_effective();
     int enabled = !strcmp(name, GLUON_MAC32_ON), ok = 0;
     char path[PATH_MAX], temporary[PATH_MAX];
     pthread_mutex_lock(&g_settings_lock);

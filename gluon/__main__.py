@@ -6,7 +6,7 @@ import os
 import sys
 import time
 
-from . import cef, cloud, migration, runtime, steam, steamplay
+from . import cef, cloud, legacy_mac, migration, runtime, steam, steamplay
 
 
 def main():
@@ -21,7 +21,11 @@ def main():
     command = sub.add_parser("cloud", help="inspect or repair automatic native Steam Cloud preparation")
     command.add_argument("operation", choices=("prepare", "status"))
     command.add_argument("appid")
-    command = sub.add_parser("sync", help="select complete runtime updates only; never edit Steam metadata")
+    command = sub.add_parser("legacy-mac", help="check or launch a 32-bit Mac app with mac32")
+    command.add_argument("operation", choices=("check", "run"))
+    command.add_argument("path", help="path to an installed Mac app or executable")
+    command.add_argument("--runner", help="path to the installed mac32 executable")
+    command = sub.add_parser("sync", help="select runtime updates and restore Steam Play after a clean Steam update")
     command.add_argument("--dry-run", action="store_true")
     command.add_argument("--log", action="store_true")
     command = sub.add_parser("console", help="run a Steam console command through its development bridge")
@@ -39,8 +43,11 @@ def main():
             lines = migration.migrate()
         elif args.command == "cloud":
             lines = cloud.prepare(args.appid) if args.operation == 'prepare' else cloud.status(args.appid)
+        elif args.command == "legacy-mac":
+            return legacy_mac.invoke(args.operation, args.path, args.runner)
         elif args.command == "sync":
             lines = runtime.activate_pending(dry_run=args.dry_run)
+            lines += steamplay.Installation().restore_after_update(dry_run=args.dry_run)
         elif args.command == "console":
             with cef.SteamBridge() as bridge:
                 lines = [bridge.console(" ".join(args.command_args), wait=args.wait)]

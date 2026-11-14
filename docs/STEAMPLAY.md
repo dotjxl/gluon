@@ -55,30 +55,38 @@ A failed package installation is not reported as working native integration.
 
 ## Steam compatibility policy
 
-At the pinned revision, signature databases are labelled `1788400362`,
-`1789086785` and `1790904859`. The README advertises stable `1791918634` and beta
-`1792192922`. These labels record different facts: database creation builds and
-upstream's advertised client support. Gluon records their provenance in the
-built payload inventory. Advertisement is not end-to-end verification.
+Steam build numbers identify the installation in status output and the repair
+receipt. When Steam starts, Gluon validates the loaded modules using the
+signature profiles bundled with its native library. A profile can match many
+Steam builds. The loader tries the newest profile first and checks for complete,
+unambiguous resolution. Before installing the client hooks, it also checks the
+compatibility manager layouts, the route lookup, and that hook sites fall inside
+executable code. The UI must pass its own signature validation, and the Steam
+web helper checks that Gluon is ready in the same client session.
 
-The installer reads the installed client package version. Unknown versions are
-refused. The dylib rechecks this policy at every Steam startup, so a subsequent
-unknown Steam update disables compatibility hooks. Even a declared version must
-resolve all required Steam client signatures before compatibility hooks install.
-The UI module also requires all its signatures. A partial or zero resolution
-installs no hooks for that module. Steam update and crash markers are preserved.
-Errors are written to `Gluon/steamplay/steamplay.log`.
+Run `gluonctl status` to see whether validation is pending, active, or failed.
+The Steam Play log records rejected profiles, layout failures, and elapsed
+validation time. A build with changed signatures or layouts can require a new
+profile or hook implementation. Steam's ordinary updates and crash markers
+remain available to Steam.
 
-Signature patterns may resolve across builds; an older filename alone neither
-proves nor disproves newer-build support. Read-only inspection identified the installed stable client as `1791918634`
-from its signed-channel manifest. Actual signature resolution and Steam UI
-behavior remain required acceptance tests.
+The agent checks for replacement of the tracked Steam application after an
+update. A clean Valve-signed replacement qualifies for the normal journaled
+installation when Steam and Wine are closed. Ambiguous or independently
+modified bundles require manual repair. The agent leaves a session that reports
+failed compatibility validation alone.
+
+On November 14, 2026, Steam build `1794536281` validated all 18 client and
+three UI signatures and activated 10 client hooks and one UI hook using profile
+`1790904859`. The local update retained the existing Wine runtime and the original
+Steam restoration bundle. Older packages continue to use their recorded build
+policy until they are upgraded.
 
 ## Legacy migration
 
 The old `enable.py` and `metadata.py` modules and their commands are retired.
 The installer stops the legacy launch agent before migration. The replacement
-agent can only select idle runtime updates.
+agent selects idle runtime updates and can restore integration after a clean Steam update.
 
 Migration reads `state/apps.json` and `state/update-policies.json`. It restores
 only recorded cache fields whose live values still match Gluon's old edits and

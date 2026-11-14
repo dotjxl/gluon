@@ -75,6 +75,25 @@ class NativeCloudTests(unittest.TestCase):
         self.assertEqual(steamplay._tree(self.compat), before)
         self.assertTrue(cloud.index()['apps']['123']['ready'])
 
+    def test_cloud_metadata_rewrite_retries_before_reporting_unavailable(self):
+        self.rules({'maxnumfiles': 1})
+        path = Path(steam.APPINFO)
+        correct = path.read_bytes()
+        path.write_bytes(correct[:-4])  # Steam has not written the end marker yet.
+        with patch.object(cloud, 'sleep', side_effect=lambda _: path.write_bytes(correct)) as wait:
+            self.assertEqual(cloud._rules('123'), {'maxnumfiles': 1})
+            wait.assert_called_once()
+
+    def test_incomplete_metadata_does_not_replace_a_complete_cloud_catalogue(self):
+        self.rules({'maxnumfiles': 1})
+        cloud.index()
+        index = self.home / 'steamplay' / cloud.INDEX
+        before = index.read_bytes()
+        Path(steam.APPINFO).write_bytes(b'partial')
+        with patch.object(cloud, 'sleep'), self.assertRaises(cloud.MetadataBusy):
+            cloud.index()
+        self.assertEqual(index.read_bytes(), before)
+
     def test_game_install_cloud_does_not_require_prefix_aliases(self):
         self.legacy()
         self.rules({'savefiles': {'0': {'root': 'gameinstall', 'path': 'Contraptions', 'pattern': '*'}}})
@@ -255,7 +274,7 @@ class NativeCloudTests(unittest.TestCase):
             data = cloud.index()
         self.assertFalse(data['apps']['123']['ready'])
 
-    def test_metadata_changed_during_index_invalidates_its_global_stamps(self):
+    def test_metadata_changed_during_index_rebuilds_from_current_rules(self):
         self.rules({'quota': 1})
         classify = cloud.needs_prefix
         changed = False
@@ -268,7 +287,8 @@ class NativeCloudTests(unittest.TestCase):
             return result
         with patch.object(cloud, 'needs_prefix', side_effect=change):
             data = cloud.index()
-        self.assertNotEqual(data['watch'][steam.APPINFO], cloud._stamp(Path(steam.APPINFO)))
+        self.assertEqual(data['watch'][steam.APPINFO], cloud._stamp(Path(steam.APPINFO)))
+        self.assertFalse(data['apps']['123']['ready'])
 
     def test_userprofile_documents_rule_backs_up_only_affected_host_files(self):
         mac = self.root / 'MacHome'

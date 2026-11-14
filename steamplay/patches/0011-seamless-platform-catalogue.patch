@@ -1,0 +1,284 @@
+Coalesce catalogue refreshes and keep native and web compatibility settings aligned.
+
+--- a/dylib/core/loader.c
++++ b/dylib/core/loader.c
+@@ -9,6 +9,7 @@
+ #include "../hooks/hooks.h"
+ #include "../feats/compat.h"
+ #include "../feats/input_access.h"
++#include "../feats/nativeplatform.h"
+ 
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -94,6 +95,7 @@
+     intptr_t slide = 0;
+     if (!client_image(STEAMCLIENT_DYLIB, &mh, &slide)) return NULL;
+ 
++    np_nativeplatform_warmup();
+     uint64_t start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+     np_resolve_result_t resolved = {0};
+     np_sigdb_t profile = {0};
+--- a/dylib/feats/nativeplatform.c
++++ b/dylib/feats/nativeplatform.c
+@@ -161,23 +161,33 @@
+ }
+ 
+ static pthread_mutex_t g_catalog_lock = PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t g_catalog_changed = PTHREAD_COND_INITIALIZER;
+ static char *g_mac32, *g_windows_launch_only;
+ static int g_catalog_loaded, g_refreshing;
+-static long long g_refreshed;
++static long long g_refreshed, g_attempt_after;
+ static struct stat g_appinfo_stamp;
+ static int same_stamp(const struct stat *a, const struct stat *b) {
+     return a->st_ino == b->st_ino && a->st_dev == b->st_dev && a->st_size == b->st_size &&
+-        a->st_mtimespec.tv_sec == b->st_mtimespec.tv_sec && a->st_mtimespec.tv_nsec == b->st_mtimespec.tv_nsec;
++        a->st_mtimespec.tv_sec == b->st_mtimespec.tv_sec && a->st_mtimespec.tv_nsec == b->st_mtimespec.tv_nsec &&
++        a->st_ctimespec.tv_sec == b->st_ctimespec.tv_sec && a->st_ctimespec.tv_nsec == b->st_ctimespec.tv_nsec;
+ }
+ 
+ char *np_nativeplatform_javascript(void) {
+     char path[PATH_MAX]; struct stat before = {0}, after = {0};
+     appinfo_path(path, sizeof path);
+-    stat(path, &before);
+-    char *out = run_helper();
++    char *out = NULL;
++    long long retry_by = now_ms() + 750;
++    for (int attempt = 0; attempt < 3; attempt++) {
++        if (stat(path, &before) == 0 && S_ISREG(before.st_mode)) {
++            out = run_helper();
++            if (out && stat(path, &after) == 0 && same_stamp(&before, &after)) break;
++            free(out);
++            out = NULL;
++        }
++        if (now_ms() >= retry_by) break;
++        if (attempt < 2) poll(NULL, 0, 40 * (attempt + 1));
++    }
+     if (!out) return NULL;
+-    stat(path, &after);
+-    if (!same_stamp(&before, &after)) { free(out); return NULL; }
+     const char *at = out;
+     size_t mac_len = 0, windows_len = 0, mac32_len = 0, launch_only_len = 0;
+     const char *mac = take_list(&at, "mac=", &mac_len);
+@@ -212,16 +222,7 @@
+ }
+ 
+ void np_nativeplatform_refresh(void) {
+-    char *js = np_nativeplatform_javascript();
+-    pthread_mutex_lock(&g_catalog_lock);
+-    if (!js) {
+-        free(g_mac32); g_mac32 = NULL; free(g_windows_launch_only); g_windows_launch_only = NULL;
+-        memset(&g_appinfo_stamp, 0, sizeof g_appinfo_stamp);
+-    }
+-    free(js);
+-    g_catalog_loaded = 1; // A failing helper stays conservative and does not spin.
+-    g_refreshed = now_ms();
+-    pthread_mutex_unlock(&g_catalog_lock);
++    free(np_nativeplatform_javascript());
+ }
+ 
+ static void *refresh_worker(void *unused) {
+@@ -229,43 +230,54 @@
+     np_nativeplatform_refresh();
+     pthread_mutex_lock(&g_catalog_lock);
+     g_refreshing = 0;
++    g_attempt_after = now_ms() + 400;
++    pthread_cond_broadcast(&g_catalog_changed);
+     pthread_mutex_unlock(&g_catalog_lock);
+     return NULL;
+ }
+ 
+-static int catalog_contains(unsigned int appid, int windows_launch_only) {
+-    int found = 0, refresh = 0, first;
+-    char path[PATH_MAX]; struct stat current = {0};
+-    appinfo_path(path, sizeof path); stat(path, &current);
+-    pthread_mutex_lock(&g_catalog_lock);
+-    first = !g_catalog_loaded && !g_refreshing;
+-    if (first) g_refreshing = 1;
+-    int stale = !same_stamp(&current, &g_appinfo_stamp);
+-    if (g_catalog_loaded && (stale || now_ms() - g_refreshed > 30000) && !g_refreshing) {
+-        refresh = g_refreshing = 1;
+-    }
+-    pthread_mutex_unlock(&g_catalog_lock);
+-    if (first) {
+-        np_nativeplatform_refresh();
+-        pthread_mutex_lock(&g_catalog_lock); g_refreshing = 0; pthread_mutex_unlock(&g_catalog_lock);
+-    }
+-    if (refresh) {
+-        pthread_t worker;
+-        if (!pthread_create(&worker, NULL, refresh_worker, NULL)) pthread_detach(worker);
+-        else {
+-            pthread_mutex_lock(&g_catalog_lock); g_refreshing = 0; pthread_mutex_unlock(&g_catalog_lock);
+-        }
+-    }
+-    pthread_mutex_lock(&g_catalog_lock);
+-    // Never route using architecture evidence from an older app metadata cache.
+-    const char *at = same_stamp(&current, &g_appinfo_stamp) ?
+-        (windows_launch_only ? g_windows_launch_only : g_mac32) : NULL;
++static void refresh_async_locked(void) {
++    if (g_refreshing || now_ms() < g_attempt_after) return;
++    pthread_t worker;
++    g_refreshing = 1;
++    if (!pthread_create(&worker, NULL, refresh_worker, NULL)) pthread_detach(worker);
++    else g_refreshing = 0;
++}
++
++void np_nativeplatform_warmup(void) {
++    pthread_mutex_lock(&g_catalog_lock);
++    if (!g_catalog_loaded) refresh_async_locked();
++    pthread_mutex_unlock(&g_catalog_lock);
++}
++
++static int list_contains(const char *at, unsigned int appid) {
+     while (at && *at) {
+         char *end;
+         unsigned long id = strtoul(at, &end, 10);
+-        if (id == appid) { found = 1; break; }
++        if (id == appid) return 1;
+         at = *end == ',' ? end + 1 : NULL;
+     }
++    return 0;
++}
++
++static int catalog_contains(unsigned int appid, int windows_launch_only) {
++    char path[PATH_MAX]; struct stat current = {0};
++    appinfo_path(path, sizeof path);
++    if (stat(path, &current) != 0) return 0;
++    pthread_mutex_lock(&g_catalog_lock);
++    int stale = !g_catalog_loaded || !same_stamp(&current, &g_appinfo_stamp);
++    const char *ids = windows_launch_only ? g_windows_launch_only : g_mac32;
++    int needs_current = !g_catalog_loaded || (stale && list_contains(ids, appid));
++    if (stale || now_ms() - g_refreshed > 30000) refresh_async_locked();
++    if (needs_current && g_refreshing) {
++        // Keep one worker for a burst of Steam updates. A known candidate can
++        // wait briefly for fresh evidence instead of immediately going native.
++        const struct timespec limit = {0, 350 * 1000 * 1000};
++        pthread_cond_timedwait_relative_np(&g_catalog_changed, &g_catalog_lock, &limit);
++        if (stat(path, &current) != 0) memset(&current, 0, sizeof current);
++    }
++    ids = windows_launch_only ? g_windows_launch_only : g_mac32;
++    int found = g_catalog_loaded && same_stamp(&current, &g_appinfo_stamp) && list_contains(ids, appid);
+     pthread_mutex_unlock(&g_catalog_lock);
+     return found;
+ }
+--- a/dylib/feats/nativeplatform.h
++++ b/dylib/feats/nativeplatform.h
+@@ -6,5 +6,6 @@
+ int np_nativeplatform_is_mac32(unsigned int appid);
+ int np_nativeplatform_is_windows_launch_only(unsigned int appid);
+ void np_nativeplatform_refresh(void);
++void np_nativeplatform_warmup(void);
+ 
+ #endif // NOTPROTON_FEATS_NATIVEPLATFORM_H
+--- a/dylib/feats/webpatch.c
++++ b/dylib/feats/webpatch.c
+@@ -274,7 +274,7 @@
+     "(" NP_WEB_IS_ZH "?\"" ZH "\":" NP_WEB_IS_IT "?\"" IT "\":\"" EN "\")"
+ 
+ #define NP_COMPAT_HINT NP_WEB_TEXT( \
+-    "Enable 32-bit Mac games under Steam Settings > Gluon to install and run the Windows version.", \
++    "Gluon can use a Windows version when Steam offers one for this game.", \
+     "请在“属性 > 兼容性”中启用 Gluon，以安装并运行 Windows 版本。", \
+     "Abilita Gluon in Propriet\\u00e0 > Compatibilit\\u00e0 per installare e avviare la versione Windows.")
+ 
+@@ -353,9 +353,7 @@
+       GLUON_INVALID_OS_GETTER, 1, 0 },
+     // Reminder banner for 32 bit Mac games
+     { NP_C1 ".is_invalid_os_type&&(0," NP_C2 ".jsx)(" NP_C3 ",{})",
+-      "!" NP_C1 ".local_per_client_data?.installed&&"
+-      NP_C1 ".most_available_per_client_data?.is_invalid_os_type&&"
+-      "(0," NP_C2 ".jsx)(" NP_C3 ",{})", 1, 0 },
++      "Boolean(" NP_C1 ".is_invalid_os_type)&&(0," NP_C2 ".jsx)(" NP_C3 ",{})", 1, 0 },
+     { "(0," NP_C1 ".we)(\"#GameList_Entry_Invalid_OSType2\")",
+       NP_COMPAT_HINT, 1, 0 },
+ };
+@@ -393,9 +391,7 @@
+       GLUON_INVALID_OS_GETTER, 1, 0 },
+     // Reminder banner for 32 bit Mac games
+     { NP_C1 ".is_invalid_os_type&&(0," NP_C2 ".jsx)(" NP_C3 ",{})",
+-      "!" NP_C1 ".local_per_client_data?.installed&&"
+-      NP_C1 ".most_available_per_client_data?.is_invalid_os_type&&"
+-      "(0," NP_C2 ".jsx)(" NP_C3 ",{})", 1, 0 },
++      "Boolean(" NP_C1 ".is_invalid_os_type)&&(0," NP_C2 ".jsx)(" NP_C3 ",{})", 1, 0 },
+     { "(0," NP_C1 ".we)(\"#GameList_Entry_Invalid_OSType2\")",
+       NP_COMPAT_HINT, 1, 0 },
+ };
+@@ -413,6 +409,15 @@
+     NP_MAC_64(APP) ";"
+ 
+ static const np_gate_t g_fixes[] = {
++    // Steam's stock mutation discards the server response. Gluon's preference
++    // switch needs the real completion result before reporting a saved change.
++    { NP_C1 "=" NP_C2 ".useCallback(" NP_C3 "=>{" NP_C4 ".SpecifyCompatTool({appid:"
++      NP_C5 ",tool_name:" NP_C3 "})},[" NP_C5 "]);return[" NP_C6 "," NP_C1 "]",
++      NP_C1 "=" NP_C2 ".useCallback(" NP_C3 "=>{" NP_C4 ".SpecifyCompatTool({appid:"
++      NP_C5 ",tool_name:" NP_C3 "})},[" NP_C5 "]);if(!" NP_C5
++      ")globalThis.__GLUON_SETTINGS__.specifyVerified=async n=>{const r=await " NP_C4
++      ".SpecifyCompatTool({appid:0,tool_name:n});return r?.BSuccess?.()===true};"
++      "return[" NP_C6 "," NP_C1 "]", 1, 1 },
+     { "(\"#AddNonSteam_Filter_Exe_MacOS\"),rFilePatterns:[\"*.app\"]",
+       "(\"#AddNonSteam_Filter_Exe_MacOS\"),rFilePatterns:[\"*.app\",\"*.exe\"]", 1, 0 },
+     { "{strFileTypeName:\"Image Files (*.tga,*.png)\",rFilePatterns:[\"*.tga\",\"*.png\"]}",
+--- a/dylib/hooks/hook_webpatch.c
++++ b/dylib/hooks/hook_webpatch.c
+@@ -123,7 +123,8 @@
+     close(in);
+ 
+     np_webpatch_set_fallback_tool(np_compat_fallback_tool_name());
+-    np_webpatch_set_gluon_mac32(gluon_settings_mac32(), gluon_settings_mac32_effective());
++    int mac32 = gluon_settings_read_mac32();
++    np_webpatch_set_gluon_mac32(mac32, mac32);
+     const char *fex[NP_WEBPATCH_FEX_TOOLS_MAX];
+     np_webpatch_set_fex_tools(fex, np_compat_fex_tools(fex, NP_WEBPATCH_FEX_TOOLS_MAX));
+     size_t patched_len = 0;
+@@ -161,7 +162,19 @@
+         return -1;
+     if (!np_webpatch_should_patch(path))
+         return -1;
+-    if (!gluon_session_ready()) return -1;
++    if (!gluon_session_ready()) {
++        const char *name = strrchr(path, '/');
++        if (!name || strcmp(name + 1, "sp.js")) return -1;
++        // The main library can be requested just before native validation
++        // completes. Wait only for an active check, never a rejected session.
++        for (int attempt = 0; attempt < 8 && gluon_session_phase() == 0; attempt++)
++            usleep(40000);
++        if (!gluon_session_ready()) {
++            np_log_attach();
++            NP_LOG_FIRST("webpatch: Steam UI opened before Gluon was ready");
++            return -1;
++        }
++    }
+     return open_patched(path);
+ }
+ 
+--- a/dylib/tests/nativeplatformcheck.c
++++ b/dylib/tests/nativeplatformcheck.c
+@@ -54,6 +54,17 @@
+     *strrchr(dir, '/') = '\0';
+     mkdir(dir, 0755);
+ 
++    char steam[PATH_MAX], appcache[PATH_MAX], cache[PATH_MAX];
++    snprintf(steam, sizeof steam, "%s/Steam", home);
++    snprintf(appcache, sizeof appcache, "%s/Steam/appcache", home);
++    snprintf(cache, sizeof cache, "%s/Steam/appcache/appinfo.vdf", home);
++    mkdir(steam, 0755);
++    mkdir(appcache, 0755);
++    FILE *input = fopen(cache, "w");
++    if (!input) return 1;
++    fclose(input);
++    setenv("GLUON_STEAM_ROOT", steam, 1);
++
+     expect("two lists", "[ \"$2\" = --platforms ] || exit 2\nprintf 'mac=20,30\\nwindows=10\\nmac32=30\\nwindows_launch_only=20\\n'",
+            "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([20,30]),windows:new Set([10]),mac32:new Set([30]),windowsLaunchOnly:new Set([20])};\n");
+     expect("empty lists", "printf 'mac=\\nwindows=\\nmac32=\\nwindows_launch_only=\\n'",
+@@ -70,6 +81,9 @@
+     expect("a helper that stalls without output", "exec /bin/sleep 3", NULL);
+ 
+     helper(NULL);
++    unlink(cache);
++    rmdir(appcache);
++    rmdir(steam);
+     rmdir(dir);
+     snprintf(dir, sizeof(dir), "%s/Library/Application Support/Gluon", home);
+     rmdir(dir);
