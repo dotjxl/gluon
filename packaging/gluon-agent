@@ -1,4 +1,4 @@
 #!/bin/sh
-# Select staged runtime updates while Steam and Wine are idle. No Steam files are edited.
+# Select staged runtimes and repair clean Steam bundle replacements while idle.
 here="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHONPATH="$here/lib" exec /usr/bin/arch -arm64 /usr/bin/python3 -m gluon sync --log

@@ -1,0 +1,145 @@
+Use the Steam legacy Mac catalogue flag even before a native executable is installed.
+
+--- a/app/Tests/NotProtonAppTests/AppInfoToolTests.swift
++++ b/app/Tests/NotProtonAppTests/AppInfoToolTests.swift
+@@ -214,7 +214,7 @@
+         let result = try read(Self.platforms(stringTable: stringTable), "--platforms")
+ 
+         #expect(result.status == 0)
+-        #expect(result.stdout == "mac=10,50\nwindows=10,20,30\nmac32=\nwindows_launch_only=\n")
++        #expect(result.stdout == "mac=10,50\nwindows=10,20,30\nmac32=\nwindows_launch_only=\nmac32_fallback=\n")
+     }
+ 
+     @Test("--platforms on a cache that stops early prints nothing and fails", arguments: [false, true])
+--- a/dylib/feats/nativeplatform.c
++++ b/dylib/feats/nativeplatform.c
+@@ -189,19 +189,29 @@
+     }
+     if (!out) return NULL;
+     const char *at = out;
+-    size_t mac_len = 0, windows_len = 0, mac32_len = 0, launch_only_len = 0;
++    size_t mac_len = 0, windows_len = 0, mac32_len = 0, launch_only_len = 0, fallback_len = 0;
+     const char *mac = take_list(&at, "mac=", &mac_len);
+     const char *windows = mac ? take_list(&at, "windows=", &windows_len) : NULL;
+     const char *mac32 = windows ? take_list(&at, "mac32=", &mac32_len) : NULL;
+     const char *launch_only = mac32 ? take_list(&at, "windows_launch_only=", &launch_only_len) : NULL;
+-    if (!launch_only || *at) {
++    const char *fallback = launch_only ? take_list(&at, "mac32_fallback=", &fallback_len) : NULL;
++    if (!fallback || *at) {
+         NP_WARN("nativeplatform: appinfo helper printed something unexpected");
+         free(out);
+         return NULL;
+     }
+-    char *ids = strndup(mac32, mac32_len);
++    size_t ids_size = mac32_len + fallback_len + 2;
++    char *ids = malloc(ids_size);
++    if (ids) snprintf(ids, ids_size, "%.*s%s%.*s", (int)mac32_len, mac32,
++                      mac32_len && fallback_len ? "," : "", (int)fallback_len, fallback);
+     char *launch_ids = strndup(launch_only, launch_only_len);
+     if (!ids || !launch_ids) { free(ids); free(launch_ids); free(out); return NULL; }
++    size_t cap = mac_len + windows_len + ids_size + launch_only_len + 256;
++    char *js = malloc(cap);
++    if (js)
++        snprintf(js, cap,
++                 "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([%.*s]),windows:new Set([%.*s]),mac32:new Set([%s]),windowsLaunchOnly:new Set([%.*s])};\n",
++                 (int)mac_len, mac, (int)windows_len, windows, ids, (int)launch_only_len, launch_only);
+     pthread_mutex_lock(&g_catalog_lock);
+     free(g_mac32);
+     g_mac32 = ids;
+@@ -211,12 +221,6 @@
+     g_catalog_loaded = 1;
+     g_refreshed = now_ms();
+     pthread_mutex_unlock(&g_catalog_lock);
+-    size_t cap = mac_len + windows_len + mac32_len + launch_only_len + 256;
+-    char *js = malloc(cap);
+-    if (js)
+-        snprintf(js, cap,
+-                 "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([%.*s]),windows:new Set([%.*s]),mac32:new Set([%.*s]),windowsLaunchOnly:new Set([%.*s])};\n",
+-                 (int)mac_len, mac, (int)windows_len, windows, (int)mac32_len, mac32, (int)launch_only_len, launch_only);
+     free(out);
+     return js;
+ }
+--- a/dylib/tests/nativeplatformcheck.c
++++ b/dylib/tests/nativeplatformcheck.c
+@@ -65,9 +65,9 @@
+     fclose(input);
+     setenv("GLUON_STEAM_ROOT", steam, 1);
+ 
+-    expect("two lists", "[ \"$2\" = --platforms ] || exit 2\nprintf 'mac=20,30\\nwindows=10\\nmac32=30\\nwindows_launch_only=20\\n'",
+-           "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([20,30]),windows:new Set([10]),mac32:new Set([30]),windowsLaunchOnly:new Set([20])};\n");
+-    expect("empty lists", "printf 'mac=\\nwindows=\\nmac32=\\nwindows_launch_only=\\n'",
++    expect("two lists", "[ \"$2\" = --platforms ] || exit 2\nprintf 'mac=20,30\\nwindows=10\\nmac32=30\\nwindows_launch_only=20\\nmac32_fallback=31\\n'",
++           "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([20,30]),windows:new Set([10]),mac32:new Set([30,31]),windowsLaunchOnly:new Set([20])};\n");
++    expect("empty lists", "printf 'mac=\\nwindows=\\nmac32=\\nwindows_launch_only=\\nmac32_fallback=\\n'",
+            "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([]),windows:new Set([]),mac32:new Set([]),windowsLaunchOnly:new Set([])};\n");
+     expect("no helper", NULL, NULL);
+     expect("a helper that fails", "printf 'mac=1\\nwindows=2\\n'; exit 1", NULL);
+--- a/helpers/appinfo.swift
++++ b/helpers/appinfo.swift
+@@ -624,7 +624,7 @@
+     return windows
+ }
+ 
+-func isMac32(_ app: [String: Value], _ id: UInt32, _ libraries: [URL], _ evidence: Mac32Evidence, _ depots: MacDepotVersions) -> Bool {
++func isMac32(_ app: [String: Value], _ id: UInt32, _ libraries: [URL], _ evidence: Mac32Evidence, _ depots: MacDepotVersions, _ legacyFallback: inout Bool) -> Bool {
+     let common = section(app["common"]), systems = words(common["oslist"])
+     guard text(common["type"]).lowercased() == "game", systems.contains("macos"),
+           systems.contains("windows") else { evidence.forget(id); return false }
+@@ -658,11 +658,11 @@
+         let os = words(config["oslist"]), executable = text(entry["executable"]).lowercased()
+         return !executable.isEmpty && (os.contains("windows") || os.isEmpty && executable.hasSuffix(".exe"))
+     }
+-    guard !launches.isEmpty, hasWindowsLaunch else { evidence.forget(id); return false }
++    guard hasWindowsLaunch else { evidence.forget(id); return false }
+     let version = depots.fingerprint(app, branch, launches)
+     if version.mac64 { evidence.forget(id); return false }
+     let remembered = evidence.matches(id, version.signature)
+-    var all32 = true, allDeclared32 = true, installed32 = false, unknownExecutable = false
++    var all32 = !launches.isEmpty, allDeclared32 = !launches.isEmpty, installed32 = false, unknownExecutable = false
+     for value in launches.values {
+         let launch = section(value), arch = words(section(launch["config"])["osarch"])
+         if !arch.isDisjoint(with: arch64) { evidence.forget(id); return false }
+@@ -683,6 +683,10 @@
+         }
+         if !proof32 { all32 = false }
+     }
++    // Steam treats a Mac entry without its 64-bit flag as legacy. Use that
++    // catalogue signal even before the Mac depot has been installed. Explicit
++    // 64-bit flags, launch declarations and observed 64-bit files veto it.
++    legacyFallback = true
+     if all32 {
+         if installed32 && !allDeclared32 { evidence.remember(id, version.signature) }
+         return true
+@@ -696,19 +700,21 @@
+ func printPlatforms(_ b: [UInt8]) throws {
+     var mac: [UInt32] = []
+     var windows: [UInt32] = []
+-    var mac32: [UInt32] = [], windowsLaunchOnly: [UInt32] = []
++    var mac32: [UInt32] = [], legacyFallbacks: [UInt32] = [], windowsLaunchOnly: [UInt32] = []
+     let evidence = Mac32Evidence(), depots = MacDepotVersions()
+     let libraries = steamLibraries(URL(fileURLWithPath: args[1]).deletingLastPathComponent().deletingLastPathComponent())
+     let complete = try forEachApp(b) { id, keys in
+         let app = try keys()
+         guard case .section(let common)? = app["common"] else { return true }
+-        if isMac32(app, id, libraries, evidence, depots) { mac32.append(id) }
++        var legacyFallback = false
++        if isMac32(app, id, libraries, evidence, depots, &legacyFallback) { mac32.append(id) }
+         if isWindowsLaunchOnly(app, depots) { windowsLaunchOnly.append(id) }
++        else if legacyFallback { legacyFallbacks.append(id) }
+         guard case .string(let oslist)? = common["oslist"] else {
+             windows.append(id)
+             return true
+         }
+-        let systems = oslist.split(separator: ",")
++        let systems = words(.string(oslist))
+         if systems.contains("macos") { mac.append(id) }
+         if systems.contains("windows") { windows.append(id) }
+         return true
+@@ -720,6 +726,7 @@
+     print("windows=" + windows.map(String.init).joined(separator: ","))
+     print("mac32=" + mac32.map(String.init).joined(separator: ","))
+     print("windows_launch_only=" + windowsLaunchOnly.map(String.init).joined(separator: ","))
++    print("mac32_fallback=" + legacyFallbacks.map(String.init).joined(separator: ","))
+ }
+ 
+ do {

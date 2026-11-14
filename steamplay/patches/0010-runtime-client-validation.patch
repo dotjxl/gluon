@@ -1,0 +1,818 @@
+Validate the loaded client before enabling Gluon, independently of build numbers.
+
+--- a/dylib/core/loader.c
++++ b/dylib/core/loader.c
+@@ -1,6 +1,6 @@
+ // Dylib entry point into steamclient.dylib
+ #include "../version.h"
+-#include "../gluon_build.h"
++#include "../gluon_client_session.h"
+ #include "../util/log.h"
+ #include "../util/file.h"
+ #include "../resolver/resolver.h"
+@@ -19,7 +19,8 @@
+ #include <dirent.h>
+ #include <mach-o/dyld.h>
+ #include <crt_externs.h>
+-#include <libgen.h>
++#include <limits.h>
++#include <time.h>
+ 
+ #define STEAMCLIENT_DYLIB "steamclient.dylib"
+ #define STEAMUI_DYLIB     "steamui.dylib"
+@@ -27,172 +28,106 @@
+ // The bootstrapper can take a while before the real client dylib appears...
+ #define WAIT_TIMEOUT_MS 60000
+ 
+-static int pick_latest_sigdb(const char *dir, char *buf, size_t buf_size) {
+-    DIR *dh = opendir(dir);
+-    if (!dh)
+-        return -1;
+-
+-    uint64_t top = 0;
+-    int found = 0;
+-    struct dirent *e;
+-    while ((e = readdir(dh)) != NULL) {
+-        size_t len = strlen(e->d_name);
+-        if (len < 6 || strcmp(e->d_name + len - 5, ".json") != 0)
+-            continue;
+-
+-        char *stop = NULL;
+-        uint64_t build = strtoull(e->d_name, &stop, 10);
+-        if (build == 0 || stop != e->d_name + len - 5)
+-            continue;
+-
+-        if (!found || build >= top) {
+-            top = build;
+-            found = 1;
+-            snprintf(buf, buf_size, "%s/%s", dir, e->d_name);
++static int profile_filter(const struct dirent *entry) {
++    const char *name = entry->d_name;
++    // These are profile filenames, not the installed Steam build.
++    return strlen(name) == 15 && strspn(name, "0123456789") == 10 &&
++           !strcmp(name + 10, ".json");
++}
++
++static int client_image(const char *name, const struct mach_header_64 **mh, intptr_t *slide) {
++    char loaded[PATH_MAX], expected[PATH_MAX], resolved[PATH_MAX], actual[PATH_MAX];
++    if (np_await_image(name, WAIT_TIMEOUT_MS, mh, slide, loaded, sizeof(loaded)) != 0)
++        return 0;
++    const char *root = getenv("GLUON_STEAM_ROOT");
++    if (!root || !*root) return 0;
++    int n = snprintf(expected, sizeof(expected), "%s/Steam.AppBundle/Steam/Contents/MacOS/%s", root, name);
++    return n > 0 && (size_t)n < sizeof(expected) &&
++           realpath(expected, resolved) && realpath(loaded, actual) && !strcmp(resolved, actual);
++}
++
++extern int gluon_preflight(const struct mach_header_64 *, intptr_t, np_resolve_result_t *);
++
++static int resolve_profile(const struct mach_header_64 *mh, intptr_t slide,
++                           const char *module, np_resolve_result_t *resolved,
++                           np_sigdb_t *profile) {
++    char directory[PATH_MAX];
++    np_support_path(directory, sizeof(directory), np_home_dir(), "signatures/macos.arm64");
++    struct dirent **entries = NULL;
++    int count = scandir(directory, &entries, profile_filter, alphasort);
++    int accepted = 0;
++    np_begin_bounds_batch(mh, slide);
++    for (int i = count - 1; i >= 0; i--) {
++        const char *name = entries[i]->d_name;
++        if (!accepted) {
++            char path[PATH_MAX];
++            int n = snprintf(path, sizeof(path), "%s/%s", directory, name);
++            np_sigdb_t sigdb = {0};
++            if (n > 0 && (size_t)n < sizeof(path) && np_load_profile(path, &sigdb) == 0) {
++                int required = np_required_for_module(&sigdb, module);
++                int found = np_resolve_signatures(mh, slide, &sigdb, module, resolved);
++                accepted = required > 0 && found == required &&
++                    (strcmp(module, STEAMCLIENT_DYLIB) || gluon_preflight(mh, slide, resolved));
++                NP_LOG("compatibility validation: %s %s resolved %d/%d (%s)",
++                       module, name, found, required, accepted ? "accepted" : "rejected");
++                if (accepted) *profile = sigdb;
++                else {
++                    np_free_resolution(resolved);
++                    np_free_profile(&sigdb);
++                }
++            }
+         }
+-    }
+-    closedir(dh);
+-
+-    return found ? 0 : -1;
+-}
+-
+-static void sigdb_path_for(char *buf, size_t buf_size) {
+-    const char *env = getenv("NOTPROTON_SIG");
+-    if (env && env[0]) {
+-        snprintf(buf, buf_size, "%s", env);
+-        return;
+-    }
+-
+-    const char *home = np_home_dir();
+-    if (!home) {
+-        snprintf(buf, buf_size, "<no-home>/<none>.json");
+-        return;
+-    }
+-
+-    char dir[512];
+-    np_support_path(dir, sizeof(dir), home, "signatures/macos.arm64");
+-
+-    if (pick_latest_sigdb(dir, buf, buf_size) == 0)
+-        return;
+-
+-    snprintf(buf, buf_size, "%s/<none>.json", dir);
++        free(entries[i]);
++    }
++    free(entries);
++    np_end_bounds_batch();
++    return accepted;
+ }
+ 
+ static pthread_t g_install;
+ static int       g_install_started;
+ static int       g_active;
+ 
+-static void install_steamui(np_sigdb_t *sigdb) {
+-    int required = np_required_for_module(sigdb, STEAMUI_DYLIB);
+-    if (required == 0) {
+-        NP_DBG("install_thread: no %s signatures in this database", STEAMUI_DYLIB);
+-        return;
+-    }
+-
++static void *install_thread(void *unused) {
++    (void)unused;
+     const struct mach_header_64 *mh = NULL;
+     intptr_t slide = 0;
+-
+-    if (np_await_image(STEAMUI_DYLIB, WAIT_TIMEOUT_MS, &mh, &slide, NULL, 0) != 0) {
+-        NP_WARN("install_thread: %s absent after %d ms, its hooks stay off",
+-                STEAMUI_DYLIB, WAIT_TIMEOUT_MS);
+-        return;
+-    }
+-
++    if (!client_image(STEAMCLIENT_DYLIB, &mh, &slide)) return NULL;
++
++    uint64_t start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+     np_resolve_result_t resolved = {0};
+-    int count = np_resolve_signatures(mh, slide, sigdb, STEAMUI_DYLIB, &resolved);
+-    NP_LOG("install_thread: %s signatures %d/%d resolved", STEAMUI_DYLIB, count, required);
+-
+-    if (count < required) {
+-        NP_ERR("unsupported Steam UI: %d/%d signatures resolved; no UI hooks installed", count, required);
+-        np_free_resolution(&resolved);
+-        return;
+-    }
+-
+-    int total = 0;
+-    int installed = np_hooks_install_steamui(mh, slide, &resolved, &total);
+-
+-    NP_LOG("install_thread: %s ready, %d/%d hooks installed",
+-           STEAMUI_DYLIB, installed, total);
+-
+-    np_free_resolution(&resolved);
+-}
+-
+-static void *install_thread(void *unused) {
+-    (void)unused;
+-
+-    NP_LOG("install_thread: waiting for %s", STEAMCLIENT_DYLIB);
+-
+-    const struct mach_header_64 *mh = NULL;
+-    intptr_t slide = 0;
+-
+-    if (np_await_image(STEAMCLIENT_DYLIB, WAIT_TIMEOUT_MS, &mh, &slide,
+-                             NULL, 0) != 0) {
+-        // The Steam bootstraper does this
+-        NP_LOG("install_thread: %s absent after %d ms, hooks will install in the "
+-               "relaunched client", STEAMCLIENT_DYLIB, WAIT_TIMEOUT_MS);
++    np_sigdb_t profile = {0};
++    if (!resolve_profile(mh, slide, STEAMCLIENT_DYLIB, &resolved, &profile)) {
++        NP_ERR("Gluon requires new Steam compatibility signatures or layout support");
++        gluon_session_publish("unsupported");
+         return NULL;
+     }
+-
+-    np_input_access_check();
+-
+-    uintptr_t text_base = 0;
+-    size_t text_size = 0;
+-
+-    if (np_find_segment(mh, slide, "__TEXT", &text_base, &text_size) != 0) {
+-        NP_ERR("install_thread: no __TEXT segment in %s", STEAMCLIENT_DYLIB);
+-        return NULL;
+-    }
+-
+-    NP_LOG("install_thread: %s __TEXT @ 0x%lx (%zu bytes) slide=0x%lx",
+-           STEAMCLIENT_DYLIB, (unsigned long)text_base, text_size,
+-           (unsigned long)slide);
+-
+-    np_sigdb_t sigdb = {0};
+-
+-    char sig_path[512];
+-    sigdb_path_for(sig_path, sizeof(sig_path));
+-
+-    if (np_load_profile(sig_path, &sigdb) != 0) {
+-        NP_ERR("install_thread: cannot load signature database from %s", sig_path);
+-        return NULL;
+-    }
+-
+-    np_resolve_result_t resolved = {0};
+-
+-    int resolved_count = np_resolve_signatures(mh, slide, &sigdb, STEAMCLIENT_DYLIB,
+-                                               &resolved);
+-    int required = np_required_for_module(&sigdb, STEAMCLIENT_DYLIB);
+-    NP_LOG("install_thread: signatures %d/%d resolved", resolved_count, required);
+-
+-    // Safety feature :)
+-    if (required == 0 || resolved_count < required) {
+-        NP_ERR("install_thread: %d/%d signatures resolved, installing nothing; "
+-               "the signature database is out of date for this Steam build",
+-               resolved_count, required);
+-        np_free_resolution(&resolved);
+-        np_free_profile(&sigdb);
+-        return NULL;
+-    }
+-
++    NP_LOG("compatibility validation: client checked in %.1f ms",
++           (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start) / 1000000.0);
+     np_hooks_launch_install(mh, slide);
+-
+     int total = 0;
+     int installed = np_hooks_install_all(mh, slide, &resolved, &total);
+-
++    np_free_resolution(&resolved);
++    np_free_profile(&profile);
+     NP_LOG("install_thread: ready, %d/%d hooks installed", installed, total);
+-
+-    if (installed == 0)
+-        NP_WARN("install_thread: no hooks installed, check the signature database");
+-    else if (installed < total)
+-        NP_WARN("install_thread: only %d of %d hooks installed, compat support is "
+-                "incomplete for this client build", installed, total);
+-
++    if (!total || installed != total) {
++        gluon_session_publish("incomplete");
++        return NULL;
++    }
++
++    if (!client_image(STEAMUI_DYLIB, &mh, &slide) ||
++        !resolve_profile(mh, slide, STEAMUI_DYLIB, &resolved, &profile)) {
++        NP_ERR("Steam UI signatures did not validate; UI integration stays off");
++        gluon_session_publish("client-only");
++        return NULL;
++    }
++    total = 0;
++    installed = np_hooks_install_steamui(mh, slide, &resolved, &total);
+     np_free_resolution(&resolved);
+-
+-    install_steamui(&sigdb);
+-
+-    np_free_profile(&sigdb);
+-
++    np_free_profile(&profile);
++    NP_LOG("install_thread: %s ready, %d/%d hooks installed", STEAMUI_DYLIB, installed, total);
++    gluon_session_publish(total && installed == total ? "ready" : "client-only");
++    np_input_access_check();
+     return NULL;
+ }
+ 
+@@ -248,20 +183,7 @@
+     np_log_init();
+     g_active = 1;
+ 
+-    char policy[1024], client[1024];
+-    const char *root = getenv("GLUON_STEAM_ROOT");
+-    if (!root || !root[0]) {
+-        const char *home = np_home_dir();
+-        if (!home) return;
+-        snprintf(client, sizeof(client), "%s/Library/Application Support/Steam", home);
+-        root = client;
+-    }
+-    np_support_path(policy, sizeof(policy), np_home_dir(), "builds");
+-    if (!gluon_build_supported(root, policy)) {
+-        NP_ERR("unsupported or unknown Steam build; Steam Play hooks are disabled; update Gluon and repair Steam");
+-        np_hooks_spawn_install();
+-        return;
+-    }
++    gluon_session_start();
+ 
+     NP_LOG("np_init: loaded into %s (pid %d) version %s",
+            pn, getpid(), NOTPROTON_VERSION);
+--- a/dylib/core/macho.c
++++ b/dylib/core/macho.c
+@@ -3,6 +3,7 @@
+ #include <mach-o/nlist.h>
+ #include <sys/mman.h>
+ #include <signal.h>
++#include <stdlib.h>
+ #include <string.h>
+ #include <unistd.h>
+ 
+@@ -120,9 +121,76 @@
+     return (const uint8_t *)(uintptr_t)(le_vmaddr + rel + (uint64_t)slide);
+ }
+ 
++// The resolver repeatedly asks for boundaries in the same image. The index
++// exists only for that batch and is private to the resolving thread.
++static _Thread_local struct {
++    const struct mach_header_64 *image;
++    intptr_t slide;
++    uintptr_t *starts;
++    size_t count;
++} bounds_index;
++
++void np_end_bounds_batch(void) {
++    free(bounds_index.starts);
++    bounds_index.starts = NULL;
++    bounds_index.image = NULL;
++    bounds_index.count = 0;
++}
++
++void np_begin_bounds_batch(const struct mach_header_64 *mh, intptr_t slide) {
++    np_end_bounds_batch();
++    size_t bytes = 0;
++    const uint8_t *p = fn_starts_table(mh, slide, &bytes);
++    // Cap the optional allocation. The streaming lookup remains available.
++    if (!p || bytes > 1024 * 1024) return;
++    uintptr_t *starts = malloc(bytes * sizeof(*starts));
++    if (!starts) return;
++    const uint8_t *end = p + bytes;
++    uintptr_t va = (uintptr_t)mh;
++    size_t count = 0;
++    while (p < end) {
++        uintptr_t delta = 0;
++        unsigned shift = 0;
++        uint8_t octet;
++        do {
++            if (p == end || shift >= sizeof(delta) * 8) goto invalid;
++            octet = *p++;
++            uintptr_t digit = octet & 0x7fu;
++            if (digit > (UINTPTR_MAX >> shift)) goto invalid;
++            delta |= digit << shift;
++            shift += 7;
++        } while (octet & 0x80u);
++        if (!delta) {
++            bounds_index.image = mh;
++            bounds_index.slide = slide;
++            bounds_index.starts = starts;
++            bounds_index.count = count;
++            return;
++        }
++        if (delta > UINTPTR_MAX - va) goto invalid;
++        va += delta;
++        starts[count++] = va;
++    }
++invalid:
++    free(starts);
++}
++
+ int np_function_bounds(const struct mach_header_64 *mh, intptr_t slide,
+                        uintptr_t addr, uintptr_t *out_start, uintptr_t *out_end) {
+     if (!mh || !out_start || !out_end) return -1;
++    if (bounds_index.image == mh && bounds_index.slide == slide) {
++        size_t lo = 0, hi = bounds_index.count;
++        while (lo < hi) {
++            size_t mid = lo + (hi - lo) / 2;
++            if (bounds_index.starts[mid] <= addr) lo = mid + 1;
++            else hi = mid;
++        }
++        if (!lo || lo == bounds_index.count) return -1;
++        *out_start = bounds_index.starts[lo - 1];
++        *out_end = bounds_index.starts[lo];
++        return 0;
++    }
++
+ 
+     size_t size = 0;
+     const uint8_t *p = fn_starts_table(mh, slide, &size);
+--- a/dylib/core/macho.h
++++ b/dylib/core/macho.h
+@@ -18,6 +18,9 @@
+                               uintptr_t addr, uintptr_t *out_base,
+                               size_t *out_size);
+ 
++void np_begin_bounds_batch(const struct mach_header_64 *mh, intptr_t slide);
++void np_end_bounds_batch(void);
++
+ int np_function_bounds(const struct mach_header_64 *mh, intptr_t slide,
+                        uintptr_t addr, uintptr_t *out_start, uintptr_t *out_end);
+ 
+--- a/dylib/feats/compat.c
++++ b/dylib/feats/compat.c
+@@ -8,6 +8,7 @@
+ 
+ #include <dirent.h>
+ #include <dlfcn.h>
++#include <fcntl.h>
+ #include <pthread.h>
+ #include <stdatomic.h>
+ #include <stdint.h>
+@@ -63,6 +64,25 @@
+ #include "compat_run.h"  // RUN_SCRIPT, generated from compat_run.sh
+ 
+ static int write_file(const char *path, const char *content, int executable) {
++    size_t length = strlen(content);
++    int current = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
++    if (current >= 0) {
++        struct stat st;
++        char buffer[4096];
++        size_t pos = 0;
++        if (fstat(current, &st) == 0 && S_ISREG(st.st_mode) &&
++            (uintmax_t)st.st_size == length &&
++            (st.st_mode & 0777) == (executable ? 0755 : 0644)) {
++            while (pos < length) {
++                size_t n = length - pos < sizeof(buffer) ? length - pos : sizeof(buffer);
++                ssize_t got = read(current, buffer, n);
++                if (got <= 0 || memcmp(content + pos, buffer, (size_t)got)) break;
++                pos += (size_t)got;
++            }
++            if (pos == length) { close(current); return 1; }
++        }
++        close(current);
++    }
+     char temporary[1024];
+     if (snprintf(temporary, sizeof(temporary), "%s.gluon-XXXXXX", path) >= (int)sizeof(temporary)) return -1;
+     int fd = mkstemp(temporary);
+@@ -159,7 +179,8 @@
+     return 2;
+ }
+ 
+-int np_compat_probe_tool_layout(uintptr_t appid_gate, uintptr_t oslist_gate) {
++int np_compat_probe_tool_layout_bounded(uintptr_t appid_gate, uintptr_t oslist_gate,
++                                        uintptr_t start, uintptr_t end) {
+     if (!appid_gate) return 0;
+ 
+     uint32_t appid_off, rt;
+@@ -175,6 +196,8 @@
+                 (unsigned long)appid_gate);
+         return 0;
+     }
++
++    if (local_path < start || local_path > end || end - local_path < 0x20) return 0;
+ 
+     // The install field is the first thing the local path wants, within a few
+     // instructions of the branch landing.
+@@ -190,7 +213,7 @@
+ 
+     int32_t by_appid   = (int32_t)appid_off   - COMPAT_TOOL_APPID_OFF;
+     int32_t by_install = (int32_t)install_off - COMPAT_TOOL_INSTALL_OFF;
+-    if (by_appid != by_install) {
++    if (by_appid != by_install || by_appid < 0 || by_appid > 0x40 || by_appid % 8) {
+         NP_ERR("np_compat_probe_tool_layout: appid moved %+d but install moved %+d; "
+                "the tool layout no longer shifts as one block",
+                by_appid, by_install);
+@@ -220,6 +243,10 @@
+                "%+d from the baseline (appid 0x%x, install 0x%x)",
+                g_tool_shift, appid_off, install_off);
+     return 1;
++}
++
++int np_compat_probe_tool_layout(uintptr_t appid_gate, uintptr_t oslist_gate) {
++    return np_compat_probe_tool_layout_bounded(appid_gate, oslist_gate, 0, UINTPTR_MAX);
+ }
+ 
+ // The manager is a much larger object than a tool entry and grows in the middle,
+@@ -523,33 +550,38 @@
+              tool->name, tool->display);
+ 
+     char path[768];
+-    int wrote = 0;
++    int wrote = 0, result;
+     snprintf(path, sizeof(path), "%s/run", tool->dir);
+-    if (write_file(path, RUN_SCRIPT, 1) != 0) return -1;
++    result = write_file(path, RUN_SCRIPT, 1);
++    if (result < 0) return -1;
++    if (result == 0) wrote++;
+     wrote++;
+ 
+-    // Rewritten every launch so field changes take effect. A rescan replaces it in
+-    // place rather than adding a second copy.
++    // Replace changed declarations in place.
+     snprintf(path, sizeof(path), "%s/compatibilitytool.vdf", tool->dir);
+-    if (write_file(path, declaration, 0) == 0) wrote++;
+-    else NP_WARN("np_compat_ensure_tool_manifest: failed to write %s", path);
++    result = write_file(path, declaration, 0);
++    if (result == 0) wrote++;
++    else if (result < 0) NP_WARN("np_compat_ensure_tool_manifest: failed to write %s", path);
+ 
+     snprintf(path, sizeof(path), "%s/toolmanifest.vdf", tool->dir);
+     if (access(path, F_OK) != 0) {
+-        if (write_file(path, TOOL_MANIFEST, 0) == 0) wrote++;
+-        else NP_WARN("np_compat_ensure_tool_manifest: failed to write %s", path);
++        result = write_file(path, TOOL_MANIFEST, 0);
++        if (result == 0) wrote++;
++        else if (result < 0) NP_WARN("np_compat_ensure_tool_manifest: failed to write %s", path);
+     }
+ 
+     char line[80];
+     snprintf(line, sizeof(line), "%s\n", tool->flavor);
+     snprintf(path, sizeof(path), "%s/flavor", tool->dir);
+-    if (write_file(path, line, 0) == 0) wrote++;
+-    else NP_WARN("np_compat_ensure_tool_manifest: failed to write %s", path);
++    result = write_file(path, line, 0);
++    if (result == 0) wrote++;
++    else if (result < 0) NP_WARN("np_compat_ensure_tool_manifest: failed to write %s", path);
+ 
+     snprintf(line, sizeof(line), "%s\n", tool->build);
+     snprintf(path, sizeof(path), "%s/build", tool->dir);
+-    if (write_file(path, line, 0) == 0) wrote++;
+-    else NP_WARN("np_compat_ensure_tool_manifest: failed to write %s", path);
++    result = write_file(path, line, 0);
++    if (result == 0) wrote++;
++    else if (result < 0) NP_WARN("np_compat_ensure_tool_manifest: failed to write %s", path);
+ 
+     if (wrote > 0)
+         NP_LOG("np_compat_ensure_tool_manifest: wrote %d file(s) to %s", wrote, tool->dir);
+--- a/dylib/feats/compat.h
++++ b/dylib/feats/compat.h
+@@ -34,6 +34,8 @@
+ // the two disagree about how far the struct shifted. The oslist gate is optional
+ // and corroborates the result at the far end.
+ int np_compat_probe_tool_layout(uintptr_t appid_gate, uintptr_t oslist_gate);
++int np_compat_probe_tool_layout_bounded(uintptr_t appid_gate, uintptr_t oslist_gate,
++                                       uintptr_t start, uintptr_t end);
+ 
+ // Reads the enabled-flag offset from BIsCompatibilityToolEnabled. Returns 0
+ // when the flag cannot be located, leaving the baseline in place.
+--- a/dylib/hooks/hook_webpatch.c
++++ b/dylib/hooks/hook_webpatch.c
+@@ -3,6 +3,7 @@
+ // not modified, to keep the Steam bootstrap happy.
+ 
+ #include "../feats/webpatch.h"
++#include "../gluon_client_session.h"
+ #include "../feats/gluon_settings.h"
+ #include "../feats/compat.h"
+ #include "../feats/compatsvc.h"
+@@ -160,6 +161,7 @@
+         return -1;
+     if (!np_webpatch_should_patch(path))
+         return -1;
++    if (!gluon_session_ready()) return -1;
+     return open_patched(path);
+ }
+ 
+--- a/dylib/hooks/hooks.c
++++ b/dylib/hooks/hooks.c
+@@ -117,6 +117,61 @@
+     return landed;
+ }
+ 
++// Resolve the structure offsets and routes before writing any client hook.
++static int inside_text(uintptr_t address, uintptr_t text, size_t size, size_t before, size_t after) {
++    return address >= text && address - text >= before && after <= size &&
++           address - text <= size - after;
++}
++
++int gluon_preflight(const struct mach_header_64 *mh, intptr_t slide, np_resolve_result_t *resolved) {
++    uintptr_t text;
++    size_t size;
++    if (np_find_section(mh, slide, "__TEXT", "__text", &text, &size) != 0) return 0;
++    uintptr_t appid_gate = np_lookup_address(resolved, "CCompatManager::ResolveCompatToolForApp.local_redirect");
++    uintptr_t oslist_gate = np_lookup_address(resolved, "CCompatManager::GetOSListOverrideForApp.oslist_gate");
++    uintptr_t enabled = np_lookup_address(resolved, "CCompatManager::BIsCompatibilityToolEnabled");
++    uintptr_t mapping = np_lookup_address(resolved, "CCompatManager::GetWildcardMapping");
++    uintptr_t lookup = np_lookup_address(resolved, "CCompatManager::WindowsOnlyLookup");
++    uintptr_t tool_fn_start, tool_fn_end;
++    if (!inside_text(appid_gate, text, size, 0, 8) ||
++        !inside_text(oslist_gate, text, size, 0x40, 0x24) ||
++        !inside_text(enabled, text, size, 0, 0x80) ||
++        !inside_text(mapping, text, size, 0, 0x100) ||
++        np_function_bounds(mh, slide, appid_gate, &tool_fn_start, &tool_fn_end) != 0 ||
++        !np_compat_probe_tool_layout_bounded(appid_gate, oslist_gate, tool_fn_start, tool_fn_end) ||
++        !np_compat_probe_enabled_off(enabled) ||
++        !np_compat_probe_windows_only_off(mapping, lookup) ||
++        !np_usershortcuts_bind(mh, slide, np_lookup_address(resolved, "CUserShortcuts::SetShortcutExe"))) {
++        NP_ERR("Steam client layout validation failed");
++        return 0;
++    }
++    uintptr_t register_fn = np_lookup_address(resolved,
++                                             "CWebUIJobDispatcher::RegisterHandler");
++    uintptr_t dispatch_fn = np_lookup_address(resolved, "CWebUITransport::DispatchJob");
++
++    if (!inside_text(register_fn, text, size, 0, 0x400) ||
++        !inside_text(dispatch_fn, text, size, 0, 0x400) ||
++        !np_webui_init(mh, slide, register_fn, dispatch_fn,
++            np_lookup_address(resolved, "CWebUIMsgJob::SendResponse"))) return 0;
++    np_webui_dump_routes();
++    np_hooks_webui_bind(mh, slide, register_fn, dispatch_fn);
++
++    for (size_t g = 0; g < sizeof(np_groups) / sizeof(np_groups[0]); g++) {
++        const np_hook_group_t *group = &np_groups[g];
++        np_patch_entry_t *entries = group->entries();
++        for (int i = 0; i < group->count(); i++) {
++            const np_patch_entry_t *entry = &entries[i];
++            uintptr_t site = entry->address ? entry->address :
++                             np_lookup_address(resolved, entry->signature);
++            if (!inside_text(site, text, size, 0, 16)) {
++                NP_ERR("Steam hook %s failed executable-section validation", entry->label);
++                return 0;
++            }
++        }
++    }
++    return 1;
++}
++
+ int np_hooks_install_all(const struct mach_header_64 *mh, intptr_t slide,
+                          np_resolve_result_t *resolved, int *total_out) {
+     np_hooks_compat_set_helpers(
+@@ -126,26 +181,6 @@
+         np_lookup_address(resolved, "CCompatManager::SetCompatToolMapping"),
+         np_lookup_address(resolved, "CCompatManager::FindMapping"),
+         np_lookup_address(resolved, "CCompatManager::GetWildcardMapping"));
+-
+-    np_compat_probe_tool_layout(
+-        np_lookup_address(resolved, "CCompatManager::ResolveCompatToolForApp.local_redirect"),
+-        np_lookup_address(resolved, "CCompatManager::GetOSListOverrideForApp.oslist_gate"));
+-    np_compat_probe_enabled_off(
+-        np_lookup_address(resolved, "CCompatManager::BIsCompatibilityToolEnabled"));
+-    np_compat_probe_windows_only_off(
+-        np_lookup_address(resolved, "CCompatManager::GetWildcardMapping"),
+-        np_lookup_address(resolved, "CCompatManager::WindowsOnlyLookup"));
+-    np_usershortcuts_bind(mh, slide,
+-        np_lookup_address(resolved, "CUserShortcuts::SetShortcutExe"));
+-
+-    uintptr_t register_fn = np_lookup_address(resolved,
+-                                             "CWebUIJobDispatcher::RegisterHandler");
+-    uintptr_t dispatch_fn = np_lookup_address(resolved, "CWebUITransport::DispatchJob");
+-
+-    np_webui_init(mh, slide, register_fn, dispatch_fn,
+-                  np_lookup_address(resolved, "CWebUIMsgJob::SendResponse"));
+-    np_webui_dump_routes();
+-    np_hooks_webui_bind(mh, slide, register_fn, dispatch_fn);
+ 
+     int total  = 0;
+     int landed = install_groups(np_groups, sizeof(np_groups) / sizeof(np_groups[0]),
+--- a/dylib/resolver/anchor.c
++++ b/dylib/resolver/anchor.c
+@@ -6,6 +6,7 @@
+ #include "../util/log.h"
+ 
+ #include <dlfcn.h>
++#include <stdlib.h>
+ #include <string.h>
+ 
+ // Default opcode filter: BLR Xn
+@@ -97,19 +98,66 @@
+             continue;
+         if (seg_size <= needle_len) continue;
+ 
++        // Include the string terminator in the search. This preserves the
++        // previous unique, NUL-terminated match rule without scanning a large
++        // mapped segment byte by byte for each anchor.
+         const char *region = (const char *)seg_base;
+-        uintptr_t result = 0;
+-        for (size_t off = 0; off + needle_len < seg_size; off++) {
+-            if (region[off] != needle[0]) continue;
+-            if (memcmp(region + off, needle, needle_len) != 0) continue;
+-            if (region[off + needle_len] != '\0') continue;
+-            if (result) return 0;       // more than one hit, give up
+-            result = seg_base + off;
+-            off += needle_len;          // skip past this match
+-        }
+-        if (result) return result;
++        const char *hit = memmem(region, seg_size, needle, needle_len + 1);
++        if (hit) {
++            const char *after = hit + needle_len + 1;
++            if (memmem(after, seg_size - (size_t)(after - region), needle, needle_len + 1))
++                return 0;
++            return (uintptr_t)hit;
++        }
+     }
+     return 0;
++}
++
++// Each anchor used to traverse the same executable image. Index only candidate
++// ADRP pairs, in instruction order, for this resolver invocation.
++static _Thread_local struct {
++    uintptr_t base;
++    size_t bytes;
++    uint32_t *words;
++    size_t count;
++} anchor_batch;
++
++void np_end_anchor_batch(void) {
++    free(anchor_batch.words);
++    anchor_batch.words = NULL;
++    anchor_batch.base = 0;
++    anchor_batch.bytes = 0;
++    anchor_batch.count = 0;
++}
++
++void np_begin_anchor_batch(uintptr_t text, size_t text_size) {
++    np_end_anchor_batch();
++    size_t words = text_size / 4;
++    if (words < 2 || words > UINT32_MAX) return;
++    const uint32_t *code = (const uint32_t *)text;
++    size_t count = 0, capacity = 4096;
++    uint32_t *candidates = malloc(capacity * sizeof(*candidates));
++    if (!candidates) return;
++    for (size_t i = 0; i + 1 < words; i++) {
++        uint32_t first = code[i];
++        if ((first & 0x9F000000u) != 0x90000000u) continue;
++        uint32_t second = code[i + 1];
++        if ((first & 0x1Fu) != ((second >> 5) & 0x1Fu)) continue;
++        if ((second & 0x7F800000u) != 0x11000000u &&
++            (second & 0xFFC00000u) != 0xF9400000u) continue;
++        if (count == capacity) {
++            if (capacity >= 1024 * 1024) { free(candidates); return; }
++            capacity *= 2;
++            uint32_t *grown = realloc(candidates, capacity * sizeof(*grown));
++            if (!grown) { free(candidates); return; }
++            candidates = grown;
++        }
++        candidates[count++] = (uint32_t)i;
++    }
++    anchor_batch.base = text;
++    anchor_batch.bytes = text_size;
++    anchor_batch.words = candidates;
++    anchor_batch.count = count;
+ }
+ 
+ // Finds the code that references `target`. `nth` selects among references in
+@@ -123,7 +171,10 @@
+     uintptr_t first = 0;
+     int seen = 0;
+ 
+-    for (size_t i = 0; i + 1 < words; i++) {
++    int indexed = anchor_batch.base == text && anchor_batch.bytes == text_sz;
++    size_t candidates = indexed ? anchor_batch.count : words - 1;
++    for (size_t candidate = 0; candidate < candidates; candidate++) {
++        size_t i = indexed ? anchor_batch.words[candidate] : candidate;
+         int reg = -1;
+         uintptr_t page = adrp_target(text + i * 4, code[i], &reg);
+         if (!page) continue;
+--- a/dylib/resolver/anchor.h
++++ b/dylib/resolver/anchor.h
+@@ -65,6 +65,10 @@
+ // Upper bound on a function body when scanning for a pair.
+ #define NP_FN_SPAN_MAX 0x400
+ 
++// Reuse the ADRP instruction candidates when resolving multiple anchors.
++void np_begin_anchor_batch(uintptr_t text, size_t text_size);
++void np_end_anchor_batch(void);
++
+ // Resolve an anchor to a runtime address (slide applied), or 0.
+ uintptr_t np_locate_anchor(const struct mach_header_64 *mh, intptr_t slide,
+                             uintptr_t text_base, size_t text_size,
+--- a/dylib/resolver/aob.c
++++ b/dylib/resolver/aob.c
+@@ -96,12 +96,19 @@
+     uintptr_t found = 0;
+     int hits = 0;
+ 
+-    // Step by 4 (ARM64).
+-    for (size_t pos = 0; pos <= limit; pos += 4) {
+-        if (region[pos + anchor_off] != anchor) continue;
+-        if (!matches_at(region + pos, pat)) continue;
+-        if (++hits > 1) return 0;
+-        found = base + pos;
++    // memchr uses vectorized search on macOS. Keep the ARM64 alignment and
++    // ambiguity rules exactly as before.
++    const uint8_t *candidate = region + anchor_off;
++    const uint8_t *last = candidate + limit;
++    while (candidate <= last) {
++        const uint8_t *hit = memchr(candidate, anchor, (size_t)(last - candidate) + 1);
++        if (!hit) break;
++        size_t pos = (size_t)(hit - region) - (size_t)anchor_off;
++        if (!(pos & 3) && matches_at(region + pos, pat)) {
++            if (++hits > 1) return 0;
++            found = base + pos;
++        }
++        candidate = hit + 1;
+     }
+     return found;
+ }
+--- a/dylib/resolver/resolver.c
++++ b/dylib/resolver/resolver.c
+@@ -139,10 +139,10 @@
+         return alt;
+     }
+ 
+-    if (alt && alt != addr)
+-        NP_WARN("resolver: '%s' anchor 0x%lx disagrees with byte pattern 0x%lx; "
+-                "keeping the anchor", sig->name, (unsigned long)addr,
+-                (unsigned long)alt);
++    if (alt && alt != addr) {
++        NP_WARN("resolver: '%s' anchor and byte pattern disagree", sig->name);
++        return 0;
++    }
+ 
+     NP_LOG("resolver: '%s' -> 0x%lx [anchor]", sig->name, (unsigned long)addr);
+     return addr;
+@@ -194,6 +194,7 @@
+     NP_LOG("resolver: scanning %s __TEXT @ 0x%lx (%zu bytes)", module, text, text_sz);
+ 
+     int resolved = 0;
++    np_begin_anchor_batch(text, text_sz);
+ 
+     for (int i = 0; i < sigdb->sig_count; i++) {
+         np_sig_entry_t *sig = &sigdb->signatures[i];
+@@ -217,6 +218,7 @@
+         push(out, sig->name, addr);
+     }
+ 
++    np_end_anchor_batch();
+     NP_LOG("resolver: %s %d/%d signatures resolved", module, resolved,
+            np_required_for_module(sigdb, module));
+     return resolved;

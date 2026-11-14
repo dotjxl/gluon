@@ -71,18 +71,29 @@ class AppInfoFile:
         if self.version >= 29:
             (table_off,) = struct.unpack_from("<q", data, pos)
             pos += 8
+            if not pos + 4 <= table_off <= len(data) - 4:
+                raise vdf.VDFError("invalid appinfo string table offset")
             (count,) = struct.unpack_from("<I", data, table_off)
-            raw = data[table_off + 4:].split(b"\0")[:count]
+            raw = data[table_off + 4:].split(b"\0", count)
+            if len(raw) <= count:
+                raise vdf.VDFError("incomplete appinfo string table")
+            raw = raw[:count]
             self.strings = [s.decode("utf-8", "replace") for s in raw]
             self._index = {s: i for i, s in enumerate(self.strings)}
             end = table_off
         self.entries: List[AppEntry] = []
+        seen = set()
         has_bin = self.version >= 28
+        header_size = 60 if has_bin else 40
         while pos + 4 <= end:
             (appid,) = struct.unpack_from("<I", data, pos)
             if appid == 0:
                 break
+            if pos + 8 > end:
+                raise vdf.VDFError("incomplete appinfo entry")
             (size,) = struct.unpack_from("<I", data, pos + 4)
+            if size < header_size or pos + 8 + size > end or appid in seen:
+                raise vdf.VDFError("invalid appinfo entry")
             body = data[pos + 8:pos + 8 + size]
             e = AppEntry(self)
             e.appid = appid
@@ -90,15 +101,15 @@ class AppInfoFile:
             e.text_sha1 = body[16:36]
             (e.change_number,) = struct.unpack_from("<I", body, 36)
             e.binary_sha1 = body[40:60] if has_bin else None
-            e.blob = body[60 if has_bin else 40:]
+            e.blob = body[header_size:]
             self.entries.append(e)
+            seen.add(appid)
             pos += 8 + size
+        else:
+            raise vdf.VDFError("incomplete appinfo cache")
 
     def get(self, appid: int) -> Optional[AppEntry]:
-        for e in self.entries:
-            if e.appid == appid:
-                return e
-        return None
+        return next((entry for entry in self.entries if entry.appid == appid), None)
 
     def _key(self, key: str) -> bytes:
         if self.strings is None:

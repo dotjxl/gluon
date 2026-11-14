@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+from time import sleep
 import hashlib
 import json
 import os
@@ -43,24 +44,34 @@ class WineBusy(CloudError):
     pass
 
 
+class MetadataBusy(CloudError):
+    pass
+
+
 def _app_data(appid):
-    """Read appinfo once per helper, without ever writing Steam metadata."""
+    """Reuse a complete appinfo snapshot and retry a concurrent Steam rewrite."""
     global _metadata_cache, _metadata_stamp
     path = Path(steam.APPINFO)
-    stamp = (str(path), _stamp(path))
-    if stamp != _metadata_stamp:
+    for delay in (0, 0.04, 0.12):
+        if delay:
+            sleep(delay)
+        stamp = (str(path), _stamp(path))
         try:
-            _metadata_cache = appinfo.AppInfoFile(str(path))
+            cache = _metadata_cache if stamp == _metadata_stamp else appinfo.AppInfoFile(str(path))
+            entry = cache.get(int(appid)) if cache else None
+            data = entry.kv.get('appinfo') if entry else None
+            if data is not None and not isinstance(data, dict):
+                raise ValueError('Invalid application metadata')
         except FileNotFoundError:
-            _metadata_cache = None
-        except (ValueError, struct.error) as error:
-            raise CloudError('Steam Cloud metadata is incomplete; let Steam finish updating and retry') from error
-        _metadata_stamp = stamp
-    entry = _metadata_cache.get(int(appid)) if _metadata_cache else None
-    data = entry.kv.get('appinfo') if entry else None
-    if data is not None and not isinstance(data, dict):
-        raise CloudError('Invalid Steam application metadata')
-    return data
+            if stamp[1] == '-' and (_metadata_stamp is None or _metadata_stamp[0] != str(path)):
+                return None
+            continue
+        except (ValueError, struct.error, IndexError, KeyError):
+            continue
+        if _stamp(path) == stamp[1]:
+            _metadata_cache, _metadata_stamp = cache, stamp
+            return data
+    raise MetadataBusy('Steam is updating its Cloud metadata. Gluon will retry automatically.')
 
 
 def _rules(appid):
@@ -523,6 +534,14 @@ def index():
     Directory/manifest and layout stamps invalidate cached decisions after new
     installs, library changes or a replaced prefix. No helper runs on warm lookups.
     """
+    try:
+        return _build_index()
+    except MetadataBusy:
+        sleep(0.06)
+        return _build_index()
+
+
+def _build_index():
     home = Path(steam.GLUON_HOME)
     watch = [Path(steam.STEAM_ROOT) / 'steamapps/libraryfolders.vdf',
              Path(steam.APPINFO), home / 'compatdata', home / 'runtime/current',
@@ -557,11 +576,15 @@ def index():
                     stamps.update({str(p): _stamp(p) for p in watched if str(p) not in stamps})
                 check_app(appid, compat)
                 ready = all(_stamp(Path(p)) == stamp for p, stamp in stamps.items())
+            except MetadataBusy:
+                raise
             except (CloudError, steamplay.SteamPlayError, OSError, ValueError):
                 ready = False
             # Duplicate installed copies are a conflict, even if one is ready.
             apps[appid] = {'ready': ready and appid not in apps,
                            'watch': stamps}
+    if _stamp(Path(steam.APPINFO)) != global_stamps[str(Path(steam.APPINFO))]:
+        raise MetadataBusy('Steam updated its Cloud metadata during preparation.')
     data = {'schema': 1, 'apps': apps, 'watch': global_stamps}
     steamplay._write_json(home / 'steamplay' / INDEX, data)
     return data
@@ -593,7 +616,7 @@ def main():
         else:
             check(args.check)
         return 0
-    except WineBusy as error:
+    except (WineBusy, MetadataBusy) as error:
         appid = args.automatic or args.check_app or args.explain
         if appid:
             try:

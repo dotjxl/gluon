@@ -30,8 +30,8 @@ Gatekeeper and Steam Input behavior still require real-machine verification.
 
 Restart Steam, then install and play Windows games normally. The compatibility
 hooks default unmapped Windows-only games to Gluon. Steam's Compatibility
-settings provide tool overrides. Hook availability depends on the Steam build
-and successful runtime signature validation.
+settings provide tool overrides. Gluon checks the loaded Steam client's
+signatures and layouts on every startup. Status includes the build number.
 
 ```sh
 "$HOME/Library/Application Support/Gluon/bin/gluonctl" status
@@ -40,19 +40,20 @@ and successful runtime signature validation.
 ```
 
 Repair requires Steam and Wine to be closed. The system package staging area
-under `/Library/Application Support/Gluon` is retained for reinstallations; the
-uninstaller removes this account's deployment. Unsupported builds fail with a
-compatibility error. Foreign injections and independent bundle changes are
-preserved and reported. Recovery retains originals, migration journals, game
-files, Wine prefixes and saves. Reconnect any tracked removable Steam application
-before uninstalling. Steam updates that restore a clean Valve-signed bundle can
-be integrated again; ambiguous modifications require restoring the saved bundle.
+under `/Library/Application Support/Gluon` stays available for reinstallation.
+The uninstaller removes this account's deployment. Check `gluonctl status`
+and the Steam Play log for signature and layout failures. Repair reports
+foreign injections and independent bundle changes. Recovery retains originals,
+migration journals, game files, Wine prefixes and saves. Reconnect any tracked
+removable Steam application before uninstalling. The background helper can
+reattach Gluon after Steam restores a clean Valve-signed bundle. Ambiguous
+modifications require restoring the saved bundle.
 
 The launcher retains Gluon's graphics, media, Steam API bridge and overlay paths.
 Plain Wine prefixes continue to use `steamapps/compatdata/<appid>/pfx-wine`.
 Runtime packages are staged under unique names and activated only while Steam
-and Wine are idle. The remaining background helper performs runtime selection.
-It never enables games or edits Steam metadata.
+and Wine are idle. The background helper selects runtime updates and repairs
+a clean Steam replacement while idle.
 
 Game sessions use a native launcher host for Steam Stop and quit, and run as
 named Mac app bundles for focus and Dock/menu-bar identity. Wine's overlay is

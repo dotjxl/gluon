@@ -1,5 +1,17 @@
 # Launch startup and memory diagnostics
 
+Steam compatibility startup reuses an index of ARM64 reference instructions
+and decoded function boundaries while validating each loaded module. Byte and
+string searches still reject ambiguous matches. Steam also skips rewriting
+Gluon's compatibility files when their contents and permissions already match.
+On Steam build `1794536281`, the logged client-validation phase went from
+527 ms with the first runtime-validation build to 411 ms with the indexes and
+faster string searches. Each timing is from one startup.
+
+The game launcher keeps a byte offset for diagnostics. Starting a new session
+no longer reads the entire existing Wine log. Set `GLUON_LOG_ENV=1` in the
+launcher's inherited environment to capture its full environment snapshot.
+
 The native Steam guard prepares required Cloud paths before Steam synchronizes.
 After applying game settings and selecting the final prefix, the launcher runs
 one Python helper for its final Cloud check, overlay validation, and app-bundle

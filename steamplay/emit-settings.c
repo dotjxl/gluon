@@ -1,6 +1,6 @@
 // Emit the actual compiled bootstrap and getter, so C preprocessing (including
 // trigraph handling) cannot silently corrupt JavaScript that header decoding misses.
-#include "../build/notproton/dylib/feats/webpatch.c"
+#include "webpatch.c"
 #include <assert.h>
 #include <stdio.h>
 int np_log_level = -1;
@@ -9,9 +9,9 @@ char *np_nativeplatform_javascript(void) { return NULL; }
 int main(int argc, char **argv) {
     assert(argc == 3);
     size_t length = 0;
-    const char *input = g_fixes[0].find;
+    const char *input = "(\"#AddNonSteam_Filter_Exe_MacOS\"),rFilePatterns:[\"*.app\"]";
     char *output = np_webpatch_transform((const uint8_t *)input, strlen(input), &length, NULL);
-    const char *suffix = g_fixes[0].replace;
+    const char *suffix = "(\"#AddNonSteam_Filter_Exe_MacOS\"),rFilePatterns:[\"*.app\",\"*.exe\"]";
     size_t suffix_length = strlen(suffix);
     assert(output && length >= suffix_length);
     assert(!strcmp(output + length - suffix_length, suffix));

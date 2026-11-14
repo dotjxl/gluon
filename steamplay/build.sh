@@ -24,7 +24,7 @@ for patch in "$here"/steamplay/patches/*.patch; do
     git -C "$src" apply "$patch"
 done
 cp "$here/steamplay/run.sh" "$src/dylib/feats/compat_run.sh"
-cp "$here/steamplay/build_gate.h" "$src/dylib/gluon_build.h"
+cp "$here/steamplay/client-session.h" "$src/dylib/gluon_client_session.h"
 cp "$here/steamplay/cloud_guard.c" "$src/dylib/feats/cloud_guard.c"
 cp "$here/steamplay/cloud_guard.h" "$src/dylib/feats/cloud_guard.h"
 for file in gluon_settings.c gluon_settings.h gluon_settings_js.h; do
@@ -37,10 +37,6 @@ git -C "$src/vendor/dobby" submodule update --init --recursive --depth 1
 make -C "$src" dobby
 make -C "$src" dylib appinfo
 mkdir -p "$here/build/evidence"
-clang -arch arm64 -mmacosx-version-min=15.0 -Wall -Wextra -Werror \
-    -fsanitize=address,undefined -fno-sanitize-recover=all \
-    "$here/steamplay/check-build-gate.c" -o "$here/build/evidence/check-build-gate"
-"$here/build/evidence/check-build-gate"
 python3 "$here/steamplay/check-cloud-guard.py"
 python3 "$here/steamplay/check-settings.py"
 # These tests use synthetic fixtures, not an installed Steam client.
@@ -77,7 +73,11 @@ cp "$here/LICENSE" "$payload/licenses/Gluon-LICENSE"
 printf 'gluon-proton\t1\trosetta\tGluon\ngluon\t1\trosetta\tGluon\n' > "$payload/tools"
 codesign -f -s - "$payload/gluon-steamplay.dylib" "$payload/appinfo"
 python3 "$here/steamplay/manifest.py" "$src" "$payload" "$here"
-lipo "$payload/gluon-steamplay.dylib" -verify_arch arm64 x86_64
+archs=" $(lipo -archs "$payload/gluon-steamplay.dylib") "
+case "$archs" in
+    *" arm64 x86_64 "*|*" x86_64 arm64 "*) ;;
+    *) echo "Steam Play dylib needs arm64 and x86_64 slices" >&2; exit 1 ;;
+esac
 codesign --verify --strict "$payload/gluon-steamplay.dylib"
 codesign --verify --strict "$payload/appinfo"
 otool -L "$payload/gluon-steamplay.dylib" > "$payload/dependencies.txt"

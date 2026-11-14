@@ -41,7 +41,7 @@ with tempfile.TemporaryDirectory() as temporary:
                 super().valve(candidate)
     install = steamplay.Installation(base / 'Gluon', base / 'Steam', FixtureIdentity())
     shutil.copytree(repository / 'build/steamplay-payload', install.payload)
-    build = next(iter(steamplay._json(install.payload / 'payload.json')['builds']))
+    build = '9999999999'  # Deliberately absent from every profile label.
     package = install.root / 'package'
     package.mkdir(parents=True)
     (package / 'steam_client_macos.installed').write_text('"Steam" { "version" "' + build + '" }')

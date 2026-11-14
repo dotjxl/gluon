@@ -104,6 +104,41 @@ class SteamPlayTests(unittest.TestCase):
         self.installation.uninstall()
         self.assertEqual(steamplay._tree(self.app), self.original)
 
+    def test_shared_client_update_refreshes_receipt_without_replacing_bundle(self):
+        data = json.loads((self.payload / 'payload.json').read_text())
+        data['builds']['456'] = {'profile': 'fixture'}
+        (self.payload / 'payload.json').write_text(json.dumps(data))
+        self.install()
+        before = steamplay._tree(self.app)
+        receipt = self.installation.receipt()['apps'][str(self.app)]
+        copies = self.system.copies
+        (self.root / 'package/steam_client_macos.installed').write_text('"Steam" { "version" "456" }')
+        self.assertIn('outdated or unsupported', self.installation.status()[0])
+        self.install()
+        current = self.installation.receipt()['apps'][str(self.app)]
+        self.assertEqual(current['build'], '456')
+        self.assertEqual(current['backup'], receipt['backup'])
+        self.assertEqual(self.system.copies, copies)
+        self.assertEqual(steamplay._tree(self.app), before)
+        self.assertIn('installed; hook activation', self.installation.status()[0])
+        self.installation.uninstall()
+        self.assertEqual(steamplay._tree(self.app), self.original)
+
+    def test_non_object_recovery_receipt_is_reported_without_touching_steam(self):
+        self.installation.state.parent.mkdir(parents=True)
+        for value in ([], None, 'invalid'):
+            with self.subTest(value=value):
+                self.installation.state.write_text(json.dumps(value))
+                with self.assertRaisesRegex(steamplay.SteamPlayError, 'expected a JSON object'):
+                    self.install()
+                self.assertEqual(steamplay._tree(self.app), self.original)
+
+    def test_non_object_packaged_selection_is_reported(self):
+        pending = self.home / 'steamplay/pending.json'
+        pending.write_text('[]')
+        with self.assertRaisesRegex(steamplay.SteamPlayError, 'expected a JSON object'):
+            steamplay.Installation(self.home, self.root, self.system)
+
     def test_upgrade_reuses_registered_app_without_searching_backups_or_other_apps(self):
         self.install()
         receipt = self.installation.receipt()['apps'][str(self.app)]
@@ -229,6 +264,85 @@ class SteamPlayTests(unittest.TestCase):
         with self.assertRaisesRegex(steamplay.SteamPlayError, 'unsupported Steam build'):
             self.install()
         self.assertEqual(steamplay._tree(self.app), self.original)
+
+    def runtime_payload(self):
+        profile = self.payload / 'signatures/macos.arm64/1790904859.json'
+        profile.parent.mkdir(parents=True)
+        profile.write_text('{}')
+        (self.payload / 'builds').unlink()
+        path = self.payload / 'payload.json'
+        data = json.loads(path.read_text())
+        data.pop('builds')
+        data['files'].pop('builds')
+        name = profile.relative_to(self.payload).as_posix()
+        data['files'][name] = steamplay._digest(profile)
+        data.update(compatibility=steamplay.RUNTIME_VALIDATION, profiles=[name])
+        path.write_text(json.dumps(data))
+        return profile
+
+    def test_runtime_validated_payload_survives_an_unlisted_steam_update(self):
+        self.runtime_payload()
+        self.install()
+        copies = self.system.copies
+        (self.root / 'package/steam_client_macos.installed').write_text('"Steam" { "version" "999" }')
+        self.assertIn('Steam build 999', self.installation.status()[0])
+        self.install()
+        self.assertEqual(self.system.copies, copies)
+        self.assertEqual(self.installation.receipt()['apps'][str(self.app)]['build'], '999')
+
+    def test_runtime_validated_payload_rejects_unverified_signature_profile(self):
+        profile = self.runtime_payload()
+        profile.with_name('9999999999.json').write_text('{}')
+        with self.assertRaisesRegex(steamplay.SteamPlayError, 'unverified Steam signature'):
+            self.install()
+        self.assertEqual(steamplay._tree(self.app), self.original)
+
+    def test_build_label_is_optional_for_an_initialized_client(self):
+        self.runtime_payload()
+        (self.root / 'package/steam_client_macos.installed').unlink()
+        with self.assertRaisesRegex(steamplay.SteamPlayError, 'open Steam'):
+            self.install()
+        client = self.root / 'Steam.AppBundle/Steam/Contents/MacOS/steamclient.dylib'
+        client.parent.mkdir(parents=True)
+        client.touch()
+        self.install()
+        self.assertEqual(self.installation.receipt()['apps'][str(self.app)]['build'], 'unknown')
+
+    def test_clean_bootstrap_update_is_repaired_only_when_steam_is_closed(self):
+        self.runtime_payload()
+        self.install()
+        record = self.installation.receipt()['apps'][str(self.app)]
+        shutil.rmtree(self.app)
+        shutil.copytree(record['backup'], self.app)
+        with patch.object(steam, 'is_running', return_value=True):
+            self.assertEqual(self.installation.restore_after_update(), [])
+        self.assertEqual(self.installation.restore_after_update(dry_run=True),
+                         ['would check Valve signature and repair ' + str(self.app)])
+        self.assertEqual(steamplay._tree(self.app), self.original)
+        self.assertIn('Installed Steam Play', self.installation.restore_after_update()[-1])
+        self.assertEqual(self.installation.restore_after_update(), [])
+
+    def test_staged_integration_waits_then_updates_installed_bundle(self):
+        self.runtime_payload()
+        self.install()
+        name = 'staged'
+        pending = self.home / 'steamplay/pending.json'
+        staged = pending.parent / 'payloads' / name
+        shutil.copytree(self.payload, staged)
+        dylib = staged / steamplay.DYLIB
+        dylib.write_text('new verified payload')
+        path = staged / 'payload.json'
+        inventory = json.loads(path.read_text())
+        inventory['files'][steamplay.DYLIB] = steamplay._digest(dylib)
+        path.write_text(json.dumps(inventory))
+        pending.write_text(json.dumps({'name': name}))
+        update = steamplay.Installation(self.home, self.root, self.system)
+        with patch.object(update, 'idle'), patch.object(steam, 'is_running', return_value=True):
+            self.assertEqual(update.restore_after_update(), [])
+        self.assertIn('update staged', update.status()[0])
+        with patch.object(update, 'idle'):
+            update.restore_after_update()
+        self.assertEqual((self.app / 'Contents/MacOS' / steamplay.DYLIB).read_bytes(), dylib.read_bytes())
 
     def test_invalid_payload_is_preserved(self):
         (self.payload / steamplay.DYLIB).write_text('tampered')
