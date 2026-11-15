@@ -20,7 +20,7 @@ on:
 
 permissions:
   actions: read
-  contents: write
+  contents: read
 
 concurrency:
   group: build-${{ github.ref }}
@@ -37,8 +37,11 @@ jobs:
 
       - name: Version
         id: version
+        env:
+          GLUON_REQUESTED_VERSION: ${{ inputs.version }}
         run: |
-          if [[ "$GITHUB_REF_TYPE" == tag ]]; then v="${GITHUB_REF_NAME#v}"; else v="${{ inputs.version }}"; fi
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then v="${GITHUB_REF_NAME#v}"; else v="$GLUON_REQUESTED_VERSION"; fi
+          [[ "$v" =~ ^[0-9][A-Za-z0-9_.-]{0,63}$ ]] || { echo "Invalid package version" >&2; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Rosetta 2
@@ -206,10 +209,13 @@ jobs:
             if [ -f "$f" ]; then echo "::group::$f (tail)"; tail -n 150 "$f"; echo "::endgroup::"; fi
           done
 
-      - name: Package
+      - name: Package and check release contents
         run: |
           GLUON_PKG_RUNTIME="$PWD/build/gluon-wine" packaging/build-pkg.sh "${{ steps.version.outputs.version }}"
           (cd dist && shasum -a 256 Gluon-*.pkg > "Gluon-${{ steps.version.outputs.version }}.pkg.sha256")
+          pkgutil --expand-full dist/Gluon-*.pkg build/release-expanded
+          python3 steamplay/check-package.py build/release-expanded
+          python3 packaging/check-release-privacy.py build/release-expanded dist/Gluon-SteamPlay-source.tar.gz
 
       - uses: actions/upload-artifact@v4
         with:
@@ -242,10 +248,24 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+  release:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Gluon-${{ needs.build.outputs.version }}
+          path: dist
       - name: Release
-        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
+          GLUON_VERSION: ${{ needs.build.outputs.version }}
         run: |
           gh release create "$GITHUB_REF_NAME" dist/Gluon-*.pkg dist/Gluon-*.pkg.sha256 dist/Gluon-SteamPlay-source.tar.gz \
-            --title "Gluon ${{ steps.version.outputs.version }}" --generate-notes --prerelease
+            --repo "$GITHUB_REPOSITORY" --title "Gluon $GLUON_VERSION" --generate-notes --prerelease

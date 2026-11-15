@@ -42,6 +42,7 @@ jobs:
           GLUON_PKG_RUNTIME="$PWD/build/fixture-runtime" packaging/build-pkg.sh 0.0.0-ci-fixture
           pkgutil --expand-full dist/Gluon-0.0.0-ci-fixture.pkg build/pkg-expanded
           python3 steamplay/check-package.py build/pkg-expanded
+          python3 packaging/check-release-privacy.py build/pkg-expanded dist/Gluon-SteamPlay-source.tar.gz
           rm dist/Gluon-0.0.0-ci-fixture.pkg
       - name: Evidence and corresponding source
         if: always()

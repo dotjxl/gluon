@@ -7,21 +7,25 @@ from pathlib import Path
 import sys
 import time
 
-from . import appbundle, cloud, overlay, steamplay
-
 
 def prepare(args):
     started = time.perf_counter()
     mode = 'none'
     if os.environ.get('GLUON_NATIVE_CLOUD') == '1':
-        mode = cloud.check_app(args.appid, args.compat)
-        if mode == 'prefix' and args.kind != 'wine':
-            raise cloud.CloudError("Gluon's native Steam Cloud requires its plain-Wine runtime")
+        from . import cloud, steamplay
+        try:
+            mode = cloud.check_app(args.appid, args.compat)
+            if mode == 'prefix' and args.kind != 'wine':
+                raise cloud.CloudError("Gluon's native Steam Cloud requires its plain-Wine runtime")
+        except (cloud.CloudError, steamplay.SteamPlayError) as error:
+            raise ValueError(str(error)) from error
     checked = time.perf_counter()
     insertion, bundle = '', ''
     runtime = Path(args.runtime)
     if args.game_session and args.kind == 'wine':
-        if os.environ.get('GLUON_OVERLAY', '1') != '0':
+        if (os.environ.get('GLUON_OVERLAY', '1') != '0'
+                and os.environ.get('STEAM_DYLD_INSERT_LIBRARIES')):
+            from . import overlay
             client = os.environ.get('STEAM_CLIENT_CONFIG_FILE')
             client = str(Path(client).parent) if client else str(
                 Path(os.environ.get('STEAM_ROOT', str(Path.home() / 'Library/Application Support/Steam')))
@@ -34,6 +38,7 @@ def prepare(args):
         if (os.environ.get('GLUON_APP_BUNDLE', '1') != '0'
                 and {'wine-macos-app-bundle', 'wine-macos-overlay-scope'} <= applied
                 and os.access(loader, os.X_OK) and ntdll.is_file()):
+            from . import appbundle
             try:
                 root = os.environ.get('STEAM_ROOT', str(Path.home() / 'Library/Application Support/Steam'))
                 name = appbundle.game_name(args.steamapps, args.appid, args.fallback_name)
@@ -60,10 +65,11 @@ def main():
     try:
         prepare(args)
         return 0
-    except (cloud.CloudError, steamplay.SteamPlayError, OSError, ValueError) as error:
+    except (OSError, ValueError) as error:
         message = 'Cloud/launch preparation for %s: %s' % (args.appid, error)
         print('gluon: ' + message, file=sys.stderr)
         if os.environ.get('GLUON_NATIVE_CLOUD') == '1':
+            from . import cloud
             cloud._show_error(message)
         return 1
 

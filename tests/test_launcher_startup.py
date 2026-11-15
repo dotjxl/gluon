@@ -301,7 +301,7 @@ with open(output, 'w') as out, open(errors, 'w') as err:
         self.assertEqual(game["focus"], "0")
         self.assertIsNone(game["dyld"])
         log = (self.home / "logs/launch-123.log").read_text()
-        self.assertIn("launch option GLUON_APP_BUNDLE=0", log)
+        self.assertIn("launch option GLUON_APP_BUNDLE\n", log)
         self.assertNotIn("launch option DYLD_", log)
 
     def test_host_pid_comes_only_from_the_launcher_host(self):

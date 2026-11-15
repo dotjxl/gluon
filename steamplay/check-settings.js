@@ -8,7 +8,7 @@ const settings = context.__GLUON_SETTINGS__;
 // Use the exact generated overview getter; raw invalid OS flags are true in
 // these cases, so a mistaken clear would hide a real unsupported/native state.
 const overview=vm.runInContext(fs.readFileSync(process.argv[3],'utf8'),context);
-context.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([32,64,480]),windows:new Set([11,32,64,480]),mac32:new Set([32]),windowsLaunchOnly:new Set([480])};
+context.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([32,64,480]),windows:new Set([11,32,64,480]),mac32:new Set([32]),windowsLaunchOnly:new Set([480]),mac32Only:new Set([43])};
 let details;
 context.appDetailsStore={GetAppDetails:()=>details};
 const invalid=(id,chosen,priority,enabled=true)=>{
@@ -33,6 +33,12 @@ settings.effectiveMac32=false;
 
 const jsx=(type,props)=>({type,...props});
 const page = settings.render(jsx), label=page.children[0], input=label.children[0];
+const preload=page.children[3].children[0].children[0];
+assert.equal(preload.defaultChecked,false);
+assert.equal(preload.role,'switch');
+assert.match(settings.macOnlyLabel(jsx,43).children,/32-bit Mac only/);
+assert.equal(settings.macOnlyLabel(jsx,32),null);
+assert.equal(settings.macOnlyLabel(jsx,64),null);
 assert.equal(input.role,'switch');assert.equal(input.defaultChecked,false);
 assert.equal(label.children[1].children,'Use Gluon for 32-bit Mac games');
 assert.match(page.children[1].children,/64-bit Mac games keep their native version/);
@@ -62,5 +68,16 @@ const target={checked:true,disabled:false,closest:()=>({querySelector:()=>status
  assert.equal(nativeCalls.length,1,'the acknowledged route takes precedence');
  assert.equal(target.checked,false);assert.equal(settings.effectiveMac32,false);
  assert.match(status.textContent,/could not be saved/);
- console.log('Gluon Settings switch, native bridge command and failure recovery passed');
+ delete settings.specifyVerified;
+ target.checked=true;
+ await preload.onChange({currentTarget:target});
+ assert.equal(nativeCalls[1],'__gluon_settings_preload_on_v1');
+ assert.equal(settings.preloadWine,true);
+ assert.equal(settings.autoMac32,false);
+ settings.specifyVerified=async()=>false;
+ target.checked=false;
+ await preload.onChange({currentTarget:target});
+ assert.equal(target.checked,true);
+ assert.equal(settings.preloadWine,true);
+ console.log('Gluon Settings switches, Mac-only tagline, native commands and failure recovery passed');
 })().catch(e=>{console.error(e);process.exitCode=1});

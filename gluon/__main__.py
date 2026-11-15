@@ -25,6 +25,8 @@ def main():
     command.add_argument("operation", choices=("check", "run"))
     command.add_argument("path", help="path to an installed Mac app or executable")
     command.add_argument("--runner", help="path to the installed mac32 executable")
+    command = sub.add_parser("preload", help=argparse.SUPPRESS)
+    command.add_argument("--home", required=True)
     command = sub.add_parser("sync", help="select runtime updates and restore Steam Play after a clean Steam update")
     command.add_argument("--dry-run", action="store_true")
     command.add_argument("--log", action="store_true")
@@ -43,6 +45,11 @@ def main():
             lines = migration.migrate()
         elif args.command == "cloud":
             lines = cloud.prepare(args.appid) if args.operation == 'prepare' else cloud.status(args.appid)
+        elif args.command == "preload":
+            from pathlib import Path
+            from .preload import warm
+            warm(Path(args.home))
+            return 0
         elif args.command == "legacy-mac":
             return legacy_mac.invoke(args.operation, args.path, args.runner)
         elif args.command == "sync":

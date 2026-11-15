@@ -12,7 +12,7 @@ home = payload.parents[2]
 assert (home / 'steamplay/pending.json').is_file()
 assert json.loads((home / 'steamplay/pending.json').read_text())['name'] == payload.name
 for path in ('bin/gluon', 'bin/gluon-launcher-host', 'bin/gluonctl', 'bin/gluon-agent', 'bin/gluon-uninstall',
-             'lib/gluon/appbundle.py', 'lib/gluon/session.py',
+             'lib/gluon/appbundle.py', 'lib/gluon/session.py', 'lib/gluon/preload.py',
              'lib/gluon/steamplay.py', 'lib/gluon/migration.py', 'lib/gluon/package_install.py', 'runtime/pending.json'):
     assert (home / path).is_file(), path
 for path in ('lib/gluon/enable.py', 'lib/gluon/metadata.py'):
