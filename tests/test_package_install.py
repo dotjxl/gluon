@@ -55,3 +55,26 @@ class PackageDeploymentTests(unittest.TestCase):
             with self.assertRaisesRegex(steamplay.SteamPlayError, 'must not run as root'):
                 package_install.deploy(self.source)
         self.assertFalse(self.home.exists())
+
+    def test_installer_requests_quit_and_continues_when_idle(self):
+        client = self.base / "steam_osx"
+        client.touch()
+        with patch.object(steam, "CLIENT_DIR", str(self.base)), \
+                patch.object(package_install, "_running",
+                             side_effect=[True, True, True, True, False, False]), \
+                patch.object(package_install, "_request_wine_quit") as quit_wine:
+            package_install.deploy(self.source, quit_apps=True)
+        self.assertTrue(any(call.args[0] == [str(client), "-shutdown"]
+                            for call in self.run.call_args_list))
+        quit_wine.assert_called_once_with(self.home)
+
+    def test_installer_reports_wine_after_timeout_before_copying(self):
+        def running(pattern, *, own_user=False):
+            return pattern == package_install.WINE_PROCESS
+
+        with patch.object(package_install, "_running", side_effect=running), \
+                patch.object(package_install, "_request_wine_quit"), \
+                patch.object(package_install.time, "monotonic", side_effect=[0, 16]):
+            with self.assertRaisesRegex(steamplay.SteamPlayError, 'Wine is still running'):
+                package_install.deploy(self.source, quit_apps=True)
+        self.assertFalse((self.home / 'bin').exists())

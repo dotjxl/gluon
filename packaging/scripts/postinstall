@@ -9,6 +9,35 @@ case "$account" in ''|root|loginwindow|*[!A-Za-z0-9_.-]*) echo 'Log in to the ac
 user_home="$(/usr/bin/dscl . -read "/Users/$account" NFSHomeDirectory | sed -n 's/^NFSHomeDirectory: //p')"
 case "$user_home" in /*) ;; *) echo 'Cannot identify the logged-in home directory.' >&2; exit 1 ;; esac
 source='/Library/Application Support/Gluon'
-exec /usr/bin/sudo -H -u "$account" /usr/bin/env \
+user_id="$(/usr/bin/id -u "$account")"
+
+if output="$(/bin/launchctl asuser "$user_id" /usr/bin/sudo -H -u "$account" /usr/bin/env \
     HOME="$user_home" GLUON_HOME="$user_home/Library/Application Support/Gluon" \
-    PYTHONPATH="$source/lib" /usr/bin/arch -arm64 /usr/bin/python3 -m gluon.package_install "$source"
+    PYTHONPATH="$source/lib" /usr/bin/arch -arm64 /usr/bin/python3 -m gluon.package_install "$source" --quit-apps 2>&1)"
+then
+    printf '%s\n' "$output"
+else
+    status=$?
+    printf '%s\n' "$output" >&2
+
+    # PackageKit displays its own generic error for a failing postinstall.
+    # Show the actual error in the console user's GUI session before returning it.
+    # Send the reason on stdin so it is neither executable code nor a process argument.
+    if [ -n "$output" ]; then
+        printf '%s\n' "$output" |
+            /bin/launchctl asuser "$user_id" /usr/bin/sudo -H -u "$account" \
+                /usr/bin/osascript -l JavaScript -e '
+                    ObjC.import("Foundation");
+                    var data = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;
+                    var reason = ObjC.unwrap($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding)).trim();
+                    var ui = Application.currentApplication();
+                    ui.includeStandardAdditions = true;
+                    ui.displayAlert("Gluon couldn’t finish installing", {
+                        message: reason,
+                        as: "critical",
+                        givingUpAfter: 45
+                    });
+                ' >/dev/null || :
+    fi
+    exit "$status"
+fi
