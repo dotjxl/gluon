@@ -6,6 +6,7 @@ installation requires Steam/Wine idle, and existing prefixes are never copied.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -13,28 +14,107 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import time
 
 from . import runtime, steam, steamplay
 
 
-def deploy(source):
+STEAM_PROCESSES = "steam_osx|steamwebhelper|Steam Helper"
+WINE_PROCESS = "wineserver"
+
+
+def _running(pattern, *, own_user=False):
+    command = ["/usr/bin/pgrep", "-x"]
+    if own_user:
+        command.extend(["-u", str(os.getuid())])
+    result = subprocess.run([*command, pattern], capture_output=True, timeout=3)
+    if result.returncode not in (0, 1):
+        raise steamplay.SteamPlayError("Could not check whether Steam or Wine is running.")
+    return result.returncode == 0
+
+
+def _request_wine_quit(home):
+    """Send ordinary macOS Quit requests to Wine apps and Gluon's game launcher."""
+    script = '''
+ObjC.import("AppKit");
+function run(argv) {
+    var launcher = argv[0];
+    var apps = $.NSWorkspace.sharedWorkspace.runningApplications;
+    for (var i = 0; i < apps.count; ++i) {
+        var app = apps.objectAtIndex(i);
+        var identifier = ObjC.unwrap(app.bundleIdentifier) || "";
+        var url = app.executableURL;
+        var executable = url.isNil() ? "" : ObjC.unwrap(url.path);
+        if (identifier === "org.winehq.wine" || identifier === "com.codeweavers.CrossOver" ||
+            identifier.indexOf("org.gluon.game.") === 0 || executable === launcher) {
+            app.terminate;
+        }
+    }
+}
+'''
+    subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", script,
+                    str(home / "bin/gluon-launcher-host")], capture_output=True, timeout=4)
+
+
+def _quit_running_apps(installation):
+    steam_open = _running(STEAM_PROCESSES)
+    wine_open = _running(WINE_PROCESS)
+    if not (steam_open or wine_open):
+        return
+
+    if steam_open and _running("steam_osx", own_user=True):
+        client = Path(steam.CLIENT_DIR) / "steam_osx"
+        if client.is_file():
+            try:
+                subprocess.run([str(client), "-shutdown"], capture_output=True, timeout=4)
+            except (OSError, subprocess.TimeoutExpired):
+                pass  # Report what is still running after the wait.
+
+    if wine_open and _running(WINE_PROCESS, own_user=True):
+        try:
+            _request_wine_quit(installation.home)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    deadline = time.monotonic() + 15
+    while True:
+        steam_open = _running(STEAM_PROCESSES)
+        wine_open = _running(WINE_PROCESS)
+        if not (steam_open or wine_open):
+            return
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.5)
+
+    if steam_open and wine_open:
+        reason = "Steam and Wine are still running. Quit Steam and close any Windows games, then retry the installer."
+    elif steam_open:
+        reason = "Steam is still running. Choose Steam > Quit Steam, then retry the installer."
+    else:
+        reason = "Wine is still running. Close any Windows games or Wine apps, then retry the installer."
+    raise steamplay.SteamPlayError(reason)
+
+
+def deploy(source, *, quit_apps=False):
     if os.geteuid() == 0:
         raise steamplay.SteamPlayError('Gluon user setup must not run as root')
     with steamplay.Installation().lock('package.lock'):
-        return _deploy(source)
+        return _deploy(source, quit_apps=quit_apps)
 
 
-def _deploy(source):
+def _deploy(source, *, quit_apps=False):
     source = Path(source).resolve(strict=True)
     home = Path(steam.GLUON_HOME)
     installation = steamplay.Installation()
-    installation.idle()
     request = runtime._request(source / 'runtime/pending.json')
     pending = steamplay._json(source / 'steamplay/pending.json')
     name = pending.get('name')
     if (request is None or not isinstance(name, str) or name in ('', '.', '..')
             or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-' for c in name)):
         raise steamplay.SteamPlayError('invalid staged package request')
+    if quit_apps:
+        _quit_running_apps(installation)
+    installation.idle()
     subprocess.run(['/bin/launchctl', 'bootout', 'gui/%d/com.gluon.agent' % os.getuid()], capture_output=True)
     home.mkdir(parents=True, exist_ok=True)
     for relative in ('runtime/' + request['name'], 'steamplay/payloads/' + name):
@@ -86,10 +166,12 @@ def _deploy(source):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('source')
+    parser.add_argument('--quit-apps', action='store_true')
+    args = parser.parse_args()
     try:
-        if len(sys.argv) != 2:
-            raise steamplay.SteamPlayError('expected a staged package directory')
-        deploy(sys.argv[1])
+        deploy(args.source, quit_apps=args.quit_apps)
     except (steamplay.SteamPlayError, runtime.RuntimeSelectionError, steam.SteamError,
             OSError, ValueError, subprocess.SubprocessError) as error:
         print('gluon: ' + str(error), file=sys.stderr)
