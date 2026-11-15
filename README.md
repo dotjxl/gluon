@@ -1,7 +1,25 @@
 # Gluon
 ![Gluon slogan](gluon-slogan.svg)
 
-Thanks to the NotProton developers for the native Steam integration.
+Thanks to the NotProton developers for their code which helped me with full Steam integration.
+
+TL;DR: About & Installation
+
+Gluon hacks the mainframe in the Steam macOS client and injects the compatibility payload for ultimate performance. Okay now actually read below this.
+
+Download the .pkg installer from the Build workflow in GitHub Actions. Make sure you download the installer, not the source code.
+
+Double-click the .pkg file and follow the instructions. If macOS asks for your password, enter it (I can't afford a $99/year subscription just to sign my apps.)
+
+Restart Steam. Yes, you actually have to restart it. That's why the instructions say to restart it.
+
+Download a Windows game from your Steam library and click Play. Gluon handles the compatibility process automatically.
+
+You do not need CrossOver, a separate NotProton installation, or any Terminal commands for a normal installation. Just the .pkg file.
+
+Important: Gluon is experimental. Not every Windows game will work, and some Steam builds may be unsupported. If something doesn't work, please check the documentation, then make an issue.
+
+For the technologically literate:
 
 Steam Play for macOS, using Gluon's Wine runtime and an integrated, GPLv3
 NotProton-derived Steam client library. CrossOver and a separate NotProton
