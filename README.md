@@ -3,7 +3,7 @@
 
 Thanks to the NotProton developers for their code which helped me with full Steam integration.
 
-TL;DR: About & Installation
+## TL;DR: About & Installation
 
 Gluon hacks the mainframe in the Steam macOS client and injects the compatibility payload for ultimate performance. Okay now actually read below this.
 
