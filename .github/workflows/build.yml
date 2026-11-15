@@ -267,5 +267,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GLUON_VERSION: ${{ needs.build.outputs.version }}
         run: |
+          case "$GLUON_VERSION" in
+            *-*) set -- --prerelease --latest=false ;;
+            *) set -- --latest ;;
+          esac
           gh release create "$GITHUB_REF_NAME" dist/Gluon-*.pkg dist/Gluon-*.pkg.sha256 dist/Gluon-SteamPlay-source.tar.gz \
-            --repo "$GITHUB_REPOSITORY" --title "Gluon $GLUON_VERSION" --generate-notes --prerelease
+            --repo "$GITHUB_REPOSITORY" --title "Gluon $GLUON_VERSION" --generate-notes --verify-tag "$@"

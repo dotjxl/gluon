@@ -52,6 +52,7 @@ static bool read_preference(const char *name, bool fallback) {
 
 bool gluon_settings_read_mac32(void) { return read_preference("auto-mac32", true); }
 bool gluon_settings_read_preload(void) { return read_preference("preload-wine", false); }
+bool gluon_settings_read_updates(void) { return read_preference("automatic-updates", false); }
 
 // Run outside Steam's launch path. The helper uses a private prefix and exits
 // within a few seconds. Give it a minimal environment without Steam or dyld.
@@ -95,12 +96,27 @@ bool gluon_settings_mac32_effective(void) {
 
 int gluon_settings_command(uint32_t appid, const char *name) {
     if (appid || !name) return 0;
-    bool preload = !strcmp(name, GLUON_PRELOAD_ON) || !strcmp(name, GLUON_PRELOAD_OFF);
-    if (!preload && strcmp(name, GLUON_MAC32_ON) && strcmp(name, GLUON_MAC32_OFF)) return 0;
-    int enabled = !strcmp(name, preload ? GLUON_PRELOAD_ON : GLUON_MAC32_ON), ok = 0;
+    static const struct {
+        const char *on, *off, *file;
+    } preferences[] = {
+        { GLUON_MAC32_ON, GLUON_MAC32_OFF, "auto-mac32" },
+        { GLUON_PRELOAD_ON, GLUON_PRELOAD_OFF, "preload-wine" },
+        { GLUON_UPDATES_ON, GLUON_UPDATES_OFF, "automatic-updates" },
+    };
+    const char *file = NULL;
+    int enabled = 0, ok = 0;
+    for (size_t i = 0; i < sizeof preferences / sizeof preferences[0]; ++i) {
+        int on = !strcmp(name, preferences[i].on);
+        if (on || !strcmp(name, preferences[i].off)) {
+            file = preferences[i].file;
+            enabled = on;
+            break;
+        }
+    }
+    if (!file) return 0;
     char path[PATH_MAX], temporary[PATH_MAX];
     pthread_mutex_lock(&g_settings_lock);
-    if (preference_path(path, sizeof path, preload ? "preload-wine" : "auto-mac32")) {
+    if (preference_path(path, sizeof path, file)) {
         snprintf(temporary, sizeof temporary, "%s.XXXXXX", path);
         int fd = mkstemp(temporary);
         if (fd >= 0) {
@@ -108,14 +124,14 @@ int gluon_settings_command(uint32_t appid, const char *name) {
             int written = write(fd, value, 2) == 2 && fsync(fd) == 0;
             int closed = close(fd) == 0;
             if (written && closed && rename(temporary, path) == 0) {
-                if (!preload) atomic_store(&g_mac32, enabled);
+                if (!strcmp(file, "auto-mac32")) atomic_store(&g_mac32, enabled);
                 ok = 1;
             }
             unlink(temporary);
         }
     }
     pthread_mutex_unlock(&g_settings_lock);
-    if (ok && preload && enabled) gluon_settings_warmup();
+    if (ok && enabled && !strcmp(file, "preload-wine")) gluon_settings_warmup();
     return ok ? 1 : -1;
 }
 

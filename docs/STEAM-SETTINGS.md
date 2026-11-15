@@ -47,6 +47,12 @@ runtime at low priority after Steam starts. It also warms once when first
 enabled. The warmup uses a disposable prefix and exits on its own. Existing
 games and custom runtimes keep their own startup and shutdown behavior.
 
+**Automatically update Gluon** is off by default. Turn it on to check the
+official GitHub release channel every six hours. Gluon downloads stable releases
+only, verifies their checksums, and waits for Steam and Wine to quit before
+applying the update. Turning the switch off pauses downloads and installation.
+The updater records its activity in Gluon's `logs/agent.log`.
+
 `steamplay/check-settings.py` runs on GitHub macOS runners or on a prepared fixture checkout. It exercises the
 built appinfo helper with disposable metadata and Mach-O fixtures, production
 preference persistence across process restarts, the actual resolver/Cloud hook

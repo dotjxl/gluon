@@ -6,6 +6,9 @@
 #define GLUON_MAC32_OFF "__gluon_settings_mac32_off_v1"
 #define GLUON_PRELOAD_ON  "__gluon_settings_preload_on_v1"
 #define GLUON_PRELOAD_OFF "__gluon_settings_preload_off_v1"
+#define GLUON_UPDATES_ON  "__gluon_settings_updates_on_v1"
+#define GLUON_UPDATES_OFF "__gluon_settings_updates_off_v1"
+bool gluon_settings_read_updates(void);
 bool gluon_settings_read_preload(void);
 void gluon_settings_warmup(void);
 bool gluon_settings_mac32(void);

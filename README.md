@@ -76,4 +76,6 @@ from that exact upstream commit during CI; Steam addresses and binary hashes
 are not checked into this repository. See [NOTICE.md](NOTICE.md) for licenses.
 
 Gluon is independent of Valve, CodeWeavers and Apple. Game compatibility varies.
-(p.s. releases marked in this format are stable: "0.0", and releases marked in this format are nightly/unstable: "0.0.0". releases in the "0.0" format will sometimes not have things the "0.0.0" builds have. if a "0.0.0" format version has "-fixed" at the end, that means the pkg was fixed for install.)
+Starting with 0.5, stable releases carry a plain version such as `0.5` or
+`0.5.1`. Candidates carry an `-rc` suffix and stay off the automatic update
+channel. You can turn on updates under [Steam Settings → Gluon](docs/STEAM-SETTINGS.md).
