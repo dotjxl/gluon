@@ -5,7 +5,7 @@ Thanks to the NotProton developers for their code which helped me with full Stea
 
 ## TL;DR: About & Installation
 
-Gluon hacks the mainframe in the Steam macOS client and injects the compatibility payload for ultimate performance. Okay now actually read below this.
+Gluon hacks the mainframe in the Steam macOS client and injects the compatibility payload for ultimate performance. Okay now actually read below this
 
 Download the .pkg installer from the Build workflow in GitHub Actions. Make sure you download the installer, not the source code.
 
