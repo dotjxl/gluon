@@ -1,0 +1,49 @@
+Initialize the Steam settings switch from the persisted update preference.
+
+--- a/dylib/feats/webpatch.c
++++ b/dylib/feats/webpatch.c
+@@ -29,7 +29,8 @@
+ 
+ #define NP_TOOL_NAME_MAX 128
+ 
+-static _Thread_local int g_gluon_mac32, g_gluon_effective_mac32, g_gluon_preload;
++static _Thread_local int g_gluon_mac32, g_gluon_effective_mac32, g_gluon_preload, g_gluon_updates;
++void np_webpatch_set_gluon_updates(int enabled) { g_gluon_updates = enabled != 0; }
+ void np_webpatch_set_gluon_preload(int enabled) { g_gluon_preload = enabled != 0; }
+ void np_webpatch_set_gluon_mac32(int saved, int effective) {
+     g_gluon_mac32 = saved != 0; g_gluon_effective_mac32 = effective != 0;
+@@ -692,11 +693,11 @@
+         return NULL;
+     }
+     free(native_mac_js);
+-    char settings[192];
++    char settings[224];
+     int settings_len = snprintf(settings, sizeof settings,
+-        "if(!globalThis.__GLUON_SETTINGS__)globalThis.__GLUON_SETTINGS__={autoMac32:%s,effectiveMac32:%s,preloadWine:%s};\n",
++        "if(!globalThis.__GLUON_SETTINGS__)globalThis.__GLUON_SETTINGS__={autoMac32:%s,effectiveMac32:%s,preloadWine:%s,automaticUpdates:%s};\n",
+         g_gluon_mac32 ? "true" : "false", g_gluon_effective_mac32 ? "true" : "false",
+-        g_gluon_preload ? "true" : "false");
++        g_gluon_preload ? "true" : "false", g_gluon_updates ? "true" : "false");
+     if (settings_len < 0 || (size_t)settings_len >= sizeof settings ||
+         !out_put(&out, settings, (size_t)settings_len) ||
+         !out_put(&out, GLUON_SETTINGS_SCRIPT, strlen(GLUON_SETTINGS_SCRIPT))) {
+--- a/dylib/feats/webpatch.h
++++ b/dylib/feats/webpatch.h
+@@ -10,6 +10,7 @@
+ // Sets the default picker fallback for this thread. Names with characters outside
+ // letters, digits, '_', '$', '.' and '-' are dropped.
+ void np_webpatch_set_fallback_tool(const char *name);
++void np_webpatch_set_gluon_updates(int enabled);
+ void np_webpatch_set_gluon_preload(int enabled);
+ void np_webpatch_set_gluon_mac32(int saved, int effective);
+ 
+--- a/dylib/hooks/hook_webpatch.c
++++ b/dylib/hooks/hook_webpatch.c
+@@ -126,6 +126,7 @@
+     int mac32 = gluon_settings_read_mac32();
+     np_webpatch_set_gluon_mac32(mac32, mac32);
+     np_webpatch_set_gluon_preload(gluon_settings_read_preload());
++    np_webpatch_set_gluon_updates(gluon_settings_read_updates());
+     const char *fex[NP_WEBPATCH_FEX_TOOLS_MAX];
+     np_webpatch_set_fex_tools(fex, np_compat_fex_tools(fex, NP_WEBPATCH_FEX_TOOLS_MAX));
+     size_t patched_len = 0;

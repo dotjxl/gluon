@@ -9,6 +9,10 @@ void np_nativeplatform_refresh(void) {}
 int main(int argc, char **argv) {
     assert(argc == 2);
     if (!strcmp(argv[1], "on")) {
+        assert(!gluon_settings_read_updates());
+        assert(!gluon_settings_command(123, GLUON_UPDATES_ON));
+        assert(gluon_settings_command(0, GLUON_UPDATES_ON) == 1);
+        assert(gluon_settings_read_updates());
         assert(!gluon_settings_read_preload());
         assert(!gluon_settings_command(123, GLUON_PRELOAD_ON));
         assert(gluon_settings_command(0, GLUON_PRELOAD_ON) == 1);
@@ -22,7 +26,10 @@ int main(int argc, char **argv) {
         assert(gluon_settings_auto_app(123));
         assert(!gluon_settings_auto_app(456) && !gluon_settings_auto_app(0));
     } else if (!strcmp(argv[1], "off")) {
-        assert(gluon_settings_read_preload()); // Loaded by a fresh process.
+        assert(gluon_settings_read_updates()); // Loaded by a fresh process.
+        assert(gluon_settings_command(0, GLUON_UPDATES_OFF) == 1);
+        assert(!gluon_settings_read_updates());
+        assert(gluon_settings_read_preload());
         assert(gluon_settings_command(0, GLUON_PRELOAD_OFF) == 1);
         assert(!gluon_settings_read_preload());
         assert(gluon_settings_mac32()); // Loaded by a fresh process.
@@ -31,6 +38,7 @@ int main(int argc, char **argv) {
         assert(!gluon_settings_mac32() && !gluon_settings_auto_app(123));
     } else if (!strcmp(argv[1], "read-off")) {
         assert(!gluon_settings_mac32());
+        assert(!gluon_settings_read_updates());
     } else if (!strcmp(argv[1], "unwritable")) {
         assert(gluon_settings_command(0, GLUON_MAC32_ON) == -1);
     } else abort();

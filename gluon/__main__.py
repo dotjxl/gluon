@@ -30,6 +30,7 @@ def main():
     command = sub.add_parser("sync", help="select runtime updates and restore Steam Play after a clean Steam update")
     command.add_argument("--dry-run", action="store_true")
     command.add_argument("--log", action="store_true")
+    command.add_argument("--check-updates", action="store_true", help=argparse.SUPPRESS)
     command = sub.add_parser("console", help="run a Steam console command through its development bridge")
     command.add_argument("command_args", nargs="+")
     command.add_argument("--wait", type=float, default=1.5)
@@ -53,13 +54,33 @@ def main():
         elif args.command == "legacy-mac":
             return legacy_mac.invoke(args.operation, args.path, args.runner)
         elif args.command == "sync":
-            lines = runtime.activate_pending(dry_run=args.dry_run)
-            lines += steamplay.Installation().restore_after_update(dry_run=args.dry_run)
+            installation = steamplay.Installation()
+            if args.dry_run:
+                lines = runtime.activate_pending(dry_run=True)
+                lines += installation.restore_after_update(dry_run=True)
+            else:
+                with installation.lock("package.lock"):
+                    lines = runtime.activate_pending()
+                    lines += installation.restore_after_update()
+                if args.check_updates:
+                    from . import updates
+                    try:
+                        lines += updates.poll()
+                    except (updates.UpdateError, steamplay.SteamPlayError, runtime.RuntimeSelectionError,
+                            OSError, ValueError, TypeError) as error:
+                        lines.append(f"Could not check automatic updates: {error}")
         elif args.command == "console":
             with cef.SteamBridge() as bridge:
                 lines = [bridge.console(" ".join(args.command_args), wait=args.wait)]
         else:
+            from pathlib import Path
+            from . import updates
             lines = steamplay.Installation().status()
+            home = Path(steam.GLUON_HOME)
+            installed = runtime._request(home / "runtime/pending.json")
+            if installed:
+                lines.append("Gluon " + installed["version"])
+            lines.append("Automatic updates: " + ("on" if updates._enabled(home) else "off"))
             lines += ["Runtime: " + os.path.realpath(os.path.join(steam.GLUON_HOME, "runtime/current"))]
         if getattr(args, "log", False) and lines:
             path = os.path.join(steam.GLUON_HOME, "logs/agent.log")

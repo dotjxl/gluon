@@ -78,3 +78,31 @@ class PackageDeploymentTests(unittest.TestCase):
             with self.assertRaisesRegex(steamplay.SteamPlayError, 'Wine is still running'):
                 package_install.deploy(self.source, quit_apps=True)
         self.assertFalse((self.home / 'bin').exists())
+
+    def test_failed_auto_update_restores_launcher_and_runtime(self):
+        package_install.deploy(self.source)
+        current = self.home / "runtime/current"
+        current.symlink_to("fixture")
+        old_pending = (self.home / "runtime/pending.json").read_bytes()
+        (self.source / "runtime/fixture").rename(self.source / "runtime/fixture-new")
+        (self.source / "runtime/pending.json").write_text(json.dumps({
+            "schema": 1, "name": "fixture-new", "version": "0.5",
+        }))
+        (self.source / "bin/gluon-agent").write_text("updated agent")
+
+        def activate(**kwargs):
+            current.unlink()
+            current.symlink_to("fixture-new")
+
+        self.run.reset_mock()
+        with patch.object(steamplay.Installation, "receipt", return_value={"apps": {"/Steam.app": {}}}), \
+                patch.object(steamplay.Installation, "payload_check"), \
+                patch.object(steamplay.Installation, "install", side_effect=steamplay.SteamPlayError("Steam reopened")), \
+                patch.object(package_install.runtime, "activate_pending", side_effect=activate), \
+                patch("gluon.updates._enabled", return_value=True):
+            with self.assertRaisesRegex(steamplay.SteamPlayError, "Steam reopened"):
+                package_install.deploy(self.source, update_version="0.5")
+        self.assertEqual((self.home / "bin/gluon-agent").read_text(), "fixture agent")
+        self.assertEqual((self.home / "runtime/pending.json").read_bytes(), old_pending)
+        self.assertEqual(current.readlink(), Path("fixture"))
+        self.run.assert_not_called()

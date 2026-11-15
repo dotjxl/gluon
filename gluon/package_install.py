@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 
 from . import runtime, steam, steamplay
 
@@ -95,29 +96,16 @@ def _quit_running_apps(installation):
     raise steamplay.SteamPlayError(reason)
 
 
-def deploy(source, *, quit_apps=False):
+def deploy(source, *, quit_apps=False, update_version=None):
     if os.geteuid() == 0:
         raise steamplay.SteamPlayError('Gluon user setup must not run as root')
     with steamplay.Installation().lock('package.lock'):
-        return _deploy(source, quit_apps=quit_apps)
+        return _deploy(source, quit_apps=quit_apps, update_version=update_version)
 
 
-def _deploy(source, *, quit_apps=False):
-    source = Path(source).resolve(strict=True)
-    home = Path(steam.GLUON_HOME)
-    installation = steamplay.Installation()
-    request = runtime._request(source / 'runtime/pending.json')
-    pending = steamplay._json(source / 'steamplay/pending.json')
-    name = pending.get('name')
-    if (request is None or not isinstance(name, str) or name in ('', '.', '..')
-            or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-' for c in name)):
-        raise steamplay.SteamPlayError('invalid staged package request')
-    if quit_apps:
-        _quit_running_apps(installation)
-    installation.idle()
-    subprocess.run(['/bin/launchctl', 'bootout', 'gui/%d/com.gluon.agent' % os.getuid()], capture_output=True)
+def _stage(source, home, directories):
     home.mkdir(parents=True, exist_ok=True)
-    for relative in ('runtime/' + request['name'], 'steamplay/payloads/' + name):
+    for relative in directories:
         src, dst = source / relative, home / relative
         if not src.is_dir() or src.is_symlink():
             raise steamplay.SteamPlayError('missing staged package directory: ' + relative)
@@ -137,6 +125,28 @@ def _deploy(source, *, quit_apps=False):
         finally:
             if temporary.exists():
                 shutil.rmtree(temporary)
+
+
+def _deploy(source, *, quit_apps=False, update_version=None):
+    source = Path(source).resolve(strict=True)
+    home = Path(steam.GLUON_HOME)
+    installation = steamplay.Installation()
+    request = runtime._request(source / 'runtime/pending.json')
+    pending = steamplay._json(source / 'steamplay/pending.json')
+    name = pending.get('name')
+    if (request is None or not isinstance(name, str) or name in ('', '.', '..')
+            or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-' for c in name)):
+        raise steamplay.SteamPlayError('invalid staged package request')
+    directories = ('runtime/' + request['name'], 'steamplay/payloads/' + name)
+    if update_version is not None:
+        if request["version"] != update_version:
+            raise steamplay.SteamPlayError("The update package version does not match its release tag.")
+        return _apply_update(source, installation, directories, request)
+    if quit_apps:
+        _quit_running_apps(installation)
+    installation.idle()
+    subprocess.run(['/bin/launchctl', 'bootout', 'gui/%d/com.gluon.agent' % os.getuid()], capture_output=True)
+    _stage(source, home, directories)
     # Scripts and Python modules are small; copy while all native sessions are idle.
     for directory in ('bin', 'lib'):
         steamplay.System().copy(source / directory, home / directory)
@@ -163,6 +173,69 @@ def _deploy(source, *, quit_apps=False):
         'ProgramArguments': [str(home / 'bin/gluon-agent')], 'RunAtLoad': True,
         'StartInterval': 60, 'ProcessType': 'Background', 'StandardErrorPath': str(logs / 'agent-stderr.log')}))
     subprocess.run(['/bin/launchctl', 'bootstrap', 'gui/%d' % os.getuid(), str(plist)], check=True)
+
+
+def _apply_update(source, installation, directories, request):
+    from .updates import _enabled, _version
+
+    home = installation.home
+    installed = runtime._request(home / "runtime/pending.json")
+    if not installed or _version(request["version"]) <= _version(installed["version"]):
+        raise steamplay.SteamPlayError("Gluon has already installed this version or a newer one.")
+    apps = installation.receipt()["apps"]
+    if len(apps) != 1:
+        raise steamplay.SteamPlayError("Automatic updates require an existing Gluon Steam installation.")
+    installation.idle()
+    _stage(source, home, directories)
+    candidate = steamplay.Installation(home)
+    candidate.payload = home / directories[1]
+    candidate.payload_check()
+
+    selections = ("runtime/pending.json", "steamplay/pending.json")
+    previous = {name: (home / name).read_bytes() for name in selections}
+    current = home / "runtime/current"
+    old_runtime = runtime._current(current)
+    save = home / "backups" / ("update-" + uuid.uuid4().hex)
+    save.mkdir(mode=0o700, parents=True)
+    moved = []
+    try:
+        for directory in ("bin", "lib"):
+            if not (home / directory).is_dir() or (home / directory).is_symlink() or (source / directory).is_symlink():
+                raise steamplay.SteamPlayError("Invalid Gluon " + directory + " directory.")
+            shutil.copytree(home / directory, save / (directory + "-new"), symlinks=True)
+            steamplay.System().copy(source / directory, save / (directory + "-new"))
+        if not _enabled(home):
+            raise steamplay.SteamPlayError("Automatic updates were turned off.")
+        installation.idle()
+        for directory in ("bin", "lib"):
+            os.rename(home / directory, save / directory)
+            moved.append(directory)
+            os.rename(save / (directory + "-new"), home / directory)
+        for name in selections:
+            steamplay._atomic(home / name, (source / name).read_bytes())
+        runtime.activate_pending(home=str(home))
+        if runtime._current(current) != request["name"]:
+            raise steamplay.SteamPlayError("Steam or Wine reopened before the update could finish.")
+        candidate.install(next(iter(apps)))
+    except Exception:
+        for directory in reversed(moved):
+            if (home / directory).exists():
+                os.rename(home / directory, save / (directory + "-failed"))
+            os.rename(save / directory, home / directory)
+        if moved:
+            for name, contents in previous.items():
+                steamplay._atomic(home / name, contents)
+            if runtime._current(current) == request["name"]:
+                if old_runtime is None:
+                    current.unlink()
+                elif old_runtime != request["name"]:
+                    temporary = current.with_name(".rollback-" + save.name)
+                    temporary.symlink_to(old_runtime)
+                    os.replace(temporary, current)
+        shutil.rmtree(save, ignore_errors=True)
+        raise
+    else:
+        shutil.rmtree(save, ignore_errors=True)
 
 
 if __name__ == '__main__':

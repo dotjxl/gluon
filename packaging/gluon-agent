@@ -1,4 +1,4 @@
 #!/bin/sh
 # Select staged runtimes and repair clean Steam bundle replacements while idle.
 here="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHONPATH="$here/lib" exec /usr/bin/arch -arm64 /usr/bin/python3 -m gluon sync --log
+PYTHONPATH="$here/lib" exec /usr/bin/arch -arm64 /usr/bin/python3 -m gluon sync --log --check-updates
