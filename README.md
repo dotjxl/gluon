@@ -11,7 +11,7 @@ Download the .pkg installer from Releases. The latest release is the most stable
 
 Completely stop Steam and Wine.
 
-Open the pkg. It will say something like "This program was blocked to protect your Mac." Go to Settings and then to Privacy & Security, scroll all the way down until you see "Security" and it should say "Gluon was blocked to protect your Mac." Click Allow, then follow the pkg instructions to install
+Open the package. It will say something like "This program was blocked to protect your Mac." Go to Settings and then to Privacy & Security, scroll all the way down until you see "Security" and it should say "Gluon was blocked to protect your Mac." Click Open Anyway, then follow the package instructions to install.
 
 Download a Windows game from your Steam library and click Play. Gluon handles the compatibility process automatically.
 
