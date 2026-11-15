@@ -42,6 +42,11 @@ installer upgrades. Steam's bridge saves changes immediately. The Compatibility
 page reports the result and shares the updated preference with other Steam
 windows on the same origin.
 
+**Preload Wine** is off by default. When enabled, Gluon warms the packaged Wine
+runtime at low priority after Steam starts. It also warms once when first
+enabled. The warmup uses a disposable prefix and exits on its own. Existing
+games and custom runtimes keep their own startup and shutdown behavior.
+
 `steamplay/check-settings.py` runs on GitHub macOS runners or on a prepared fixture checkout. It exercises the
 built appinfo helper with disposable metadata and Mach-O fixtures, production
 preference persistence across process restarts, the actual resolver/Cloud hook
@@ -49,8 +54,9 @@ against a fake manager, and the exact Settings UI script against a JSX/DOM bridg
 The existing upstream gate fixtures continue to require exact anchors for both
 supported Settings shapes and refuse drifted Steam UI files.
 
-For a 32-bit title that only offers Mac files, use a separate Intel Mac
-compatibility runner. Gluon can call the experimental
+Steam's game page shows **32-bit Mac only · Requires a legacy Mac runtime**
+when its catalogue indicates a 32-bit Mac game with no other platform build.
+For these games, Gluon can call the experimental
 [mac32 runner](https://github.com/Shagulka/mac32) once it is installed:
 
 ```sh

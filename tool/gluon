@@ -52,13 +52,17 @@ esac
 LOG_DIR="$GLUON_HOME/logs"
 LOG="$LOG_DIR/launch-$appid.log"
 WINE_LOG="$LOG_DIR/wine-$appid.log"
-[ -d "$LOG_DIR" ] || mkdir -p "$LOG_DIR" || exit 1
+(umask 077
+ [ -d "$LOG_DIR" ] || mkdir -p "$LOG_DIR" || exit 1
+ : >> "$LOG" && : >> "$WINE_LOG"
+) || exit 1
 
 # Keep Steam's tracked PID while registering it as a macOS application. Steam
 # first sends that PID a Cocoa quit request, which a shell cannot receive.
 # The host gives this script a fresh signal state and owns it until cleanup ends.
 if [ -n "$game_session" ] && [ "${GLUON_LAUNCHER_HOST:-}" != 1 ] && [ -z "$GLUON_DRY_RUN" ]; then
-    launcher_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+    launcher_dir="${0%/*}"
+    [ "$launcher_dir" != "$0" ] || launcher_dir=.
     if [ -x "$launcher_dir/gluon-launcher-host" ]; then
         exec "$launcher_dir/gluon-launcher-host" "$launcher_dir/${0##*/}" "$@" 2>> "$LOG"
     fi
@@ -87,24 +91,31 @@ fail() {
 # spawning a date process for every inherited Steam variable.
 log_timestamp=$(date '+%Y-%m-%d %H:%M:%S')
 log "---- invoked: $0"
-n=0
-for a in "$@"; do
-    n=$((n + 1))
-    log "  argv[$n] = $a"
-done
-log "  cwd = $PWD"
+# Verbose snapshots may include private launch options. Never log them by default.
 if [ "${GLUON_LOG_ENV:-0}" = 1 ]; then
+    n=0
+    for a in "$@"; do
+        n=$((n + 1))
+        log "  argv[$n] = $a"
+    done
+    log "  cwd = $PWD"
     while IFS= read -r name; do
         case "$name" in
+            *TOKEN*|*KEY*|*PASS*|*SECRET*|*CREDENTIAL*) ;;
             Steam*|STEAM_*|GLUON_*|WINE*|PROTON_*) log "  env $name=${!name}" ;;
         esac
     done < <(compgen -e)
 fi
 unset log_timestamp
 
-source_root="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
 helper_lib="$GLUON_HOME/lib"
-[ -f "$helper_lib/gluon/runtime.py" ] || helper_lib="$source_root"
+launcher_parent="${0%/*}"
+[ "$launcher_parent" != "$0" ] || launcher_parent=.
+case "$launcher_parent" in
+    /*) source_root="$launcher_parent/.." ;;
+    *) source_root="$PWD/$launcher_parent/.." ;;
+esac
+[ -f "$helper_lib/gluon/runtime.py" ] || helper_lib="$(cd "$source_root" 2>/dev/null && pwd)"
 
 # Settings, later ones winning: every game ($GLUON_HOME/settings.env), this game
 # ($GLUON_HOME/games/<appid>.env), then the game's Steam launch options.
@@ -115,7 +126,7 @@ for settings in "$GLUON_HOME/settings.env" "$GLUON_HOME/games/$appid.env"; do
             '' | '#'*) ;;
             [A-Za-z_]*=*)
                 export "$line"
-                log "  setting $line"
+                log "  setting ${line%%=*}"
                 ;;
         esac
     done < "$settings"
@@ -135,7 +146,7 @@ for argument in "$@"; do
             continue
         elif [[ "$argument" =~ $setting_name ]]; then
             export "$argument"
-            log "  launch option $argument"
+            log "  launch option ${argument%%=*}"
             continue
         fi
     fi
@@ -200,7 +211,8 @@ shift
 # A legacy wrapper can expose waitforexitandrun only after peeling. Give that
 # normalized game command the same single native host as a direct invocation.
 if [ -n "$game_session" ] && [ "${GLUON_LAUNCHER_HOST:-}" != 1 ] && [ -z "$GLUON_DRY_RUN" ]; then
-    launcher_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+    launcher_dir="${0%/*}"
+    [ "$launcher_dir" != "$0" ] || launcher_dir=.
     if [ -x "$launcher_dir/gluon-launcher-host" ]; then
         exec "$launcher_dir/gluon-launcher-host" "$0" "$verb" "$exe" "$@" 2>> "$LOG"
     fi
@@ -261,7 +273,7 @@ fi
 if [ ! -d "$compat/pfx-wine" ] && [ -d "$GLUON_HOME/compatdata/$appid/pfx-wine" ]; then
     compat="$GLUON_HOME/compatdata/$appid"
 fi
-mkdir -p "$compat" || fail "cannot create $compat"
+[ -d "$compat" ] || mkdir -p "$compat" || fail "cannot create $compat"
 export STEAM_COMPAT_DATA_PATH="$compat" STEAM_COMPAT_APP_ID="$appid"
 if [ -n "$game_session" ]; then
     export SteamAppId="$appid" SteamGameId="${SteamGameId:-$appid}"
@@ -302,7 +314,8 @@ if [ "$kind" = proton ]; then
     # The contract Steam gives a Steam Play tool. The client folder is where the tool
     # finds the running client's steamclient.dylib for the Steam API.
     if [ -n "$STEAM_CLIENT_CONFIG_FILE" ]; then
-        client_dir="$(dirname "$STEAM_CLIENT_CONFIG_FILE")"
+        client_dir="${STEAM_CLIENT_CONFIG_FILE%/*}"
+        [ "$client_dir" != "$STEAM_CLIENT_CONFIG_FILE" ] || client_dir=.
     else
         client_dir="$HOME/Library/Application Support/Steam/Steam.AppBundle/Steam/Contents/MacOS"
     fi
@@ -317,7 +330,8 @@ fi
 # Chromium-based games (Electron, CEF) draw from a separate GPU process; the Direct3D
 # layers here cannot present into another process's window, which leaves a blank
 # window. Keeping the GPU work inside the window's own process avoids that.
-exe_dir="$(dirname "$exe")"
+exe_dir="${exe%/*}"
+[ "$exe_dir" != "$exe" ] || exe_dir=.
 # This internal marker must come from this launch's resource detection, never an
 # inherited environment, settings file or Steam Launch Option. Wine uses it only
 # with exact Chromium child-role tokens; the browser and GPU retain the overlay.
@@ -328,7 +342,7 @@ if [ -n "$game_session" ] && [ -z "$GLUON_NO_AUTO_ARGS" ] && { [ -f "$exe_dir/ch
     [ "$kind" != wine ] || export GLUON_CHROMIUM_OVERLAY_SCOPE=in-process-gpu-v1
 fi
 if [ -n "$game_session" ] && [ -n "$GLUON_EXTRA_ARGS" ]; then
-    log "  extra arguments: $GLUON_EXTRA_ARGS"
+    log "  using extra launch arguments"
     # shellcheck disable=SC2086  # word splitting is intended: one argument per word
     set -- "$@" $GLUON_EXTRA_ARGS
 fi
@@ -341,7 +355,8 @@ if [ -n "$game_session" ] && [ "$kind" = wine ] && [ -f "$runtime/lib/wine/x86_6
     && [ "${GLUON_STEAM_BRIDGE:-1}" != 0 ]; then
     steam_bridge=1
     if [ -n "$STEAM_CLIENT_CONFIG_FILE" ]; then
-        client_dir="$(dirname "$STEAM_CLIENT_CONFIG_FILE")"
+        client_dir="${STEAM_CLIENT_CONFIG_FILE%/*}"
+        [ "$client_dir" != "$STEAM_CLIENT_CONFIG_FILE" ] || client_dir=.
     else
         client_dir="$HOME/Library/Application Support/Steam/Steam.AppBundle/Steam/Contents/MacOS"
     fi
@@ -366,10 +381,12 @@ patches="$runtime/licenses/gluon-wine-patches/APPLIED.txt"
 if [ "${GLUON_NATIVE_CLOUD:-}" = 1 ] || { [ -n "$game_session" ] && [ "$kind" = wine ] \
     && { [ -n "$STEAM_DYLD_INSERT_LIBRARIES" ] || { [ -n "$overlay_scoped" ] \
     && [ "${GLUON_APP_BUNDLE:-1}" != 0 ]; }; }; }; then
+    fallback_name="${install_dir:-$exe}"
+    fallback_name="${fallback_name##*/}"
     launch_setup="$(PYTHONPATH="$helper_lib" PYTHONDONTWRITEBYTECODE=1 /usr/bin/arch -arm64 /usr/bin/python3 \
         -m gluon.launch --home "$GLUON_HOME" --appid "$appid" --compat "$compat" \
         --runtime "$runtime" --kind "$kind" --steamapps "${library:+$library/steamapps}" \
-        --fallback-name "$(basename "${install_dir:-$exe}" .exe)" ${game_session:+--game-session} \
+        --fallback-name "${fallback_name%.exe}" ${game_session:+--game-session} \
         2>> "$LOG")" || fail "launch preparation failed (see $LOG)"
     while IFS= read -r setting; do
         case "$setting" in
@@ -396,8 +413,8 @@ esac
 case "$exe" in
     [A-Za-z]:*) ;;
     */*)
-        exe="$(cd "$(dirname "$exe")" && pwd)/$(basename "$exe")" || fail "cannot resolve executable"
-        cd "$(dirname "$exe")" || fail "cannot enter $(dirname "$exe")"
+        cd "${exe_dir:-/}" || fail "cannot enter the executable's directory"
+        exe="${PWD%/}/${exe##*/}"
         ;;
 esac
 # Bind child overlay scoping to the resource-identified executable after the
@@ -569,7 +586,7 @@ else
     if [ -n "$bundle" ]; then
         # LaunchServices starts the bundle with the user's login environment; pass
         # this session's Wine, Gluon, Steam and graphics settings explicitly.
-        launch_environment=(--env "GLUON_GAME_CWD=$(pwd)")
+        launch_environment=(--env "GLUON_GAME_CWD=$PWD")
         [ -z "$overlay_insert" ] || launch_environment+=(--env "GLUON_OVERLAY_INSERT=$overlay_insert")
         while IFS= read -r name; do
             [[ "$name" =~ ^(WINE[A-Z0-9_]*|GLUON_[A-Z0-9_]+|STEAM_[A-Za-z0-9_]+|Steam[A-Za-z0-9_]*|GST_[A-Z0-9_]+|DXMT_[A-Z0-9_]+|DXVK_[A-Z0-9_]+|MVK_[A-Z0-9_]+|MTL_[A-Z0-9_]+|ROSETTA_[A-Z0-9_]+|DOTNET_[A-Za-z0-9_]+|PROTON_[A-Z0-9_]+|SDL_[A-Z0-9_]+|LANG|LC_[A-Z]+)$ ]] || continue

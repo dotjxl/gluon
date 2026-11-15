@@ -8,9 +8,15 @@ On Steam build `1794536281`, the logged client-validation phase went from
 527 ms with the first runtime-validation build to 411 ms with the indexes and
 faster string searches. Each timing is from one startup.
 
+The Steam UI patcher retains the offsets of validated anchors and copies the
+rest of the chunk in spans. The launch script uses shell path operations and
+the Python preparation step imports Cloud, overlay and bundle code only when
+the launch needs them.
+
 The game launcher keeps a byte offset for diagnostics. Starting a new session
-no longer reads the entire existing Wine log. Set `GLUON_LOG_ENV=1` in the
-launcher's inherited environment to capture its full environment snapshot.
+no longer reads the entire existing Wine log. Arguments and environment values
+are omitted by default. Use `GLUON_LOG_ENV=1` only for local diagnostics and
+review those logs before sharing them.
 
 The native Steam guard prepares required Cloud paths before Steam synchronizes.
 After applying game settings and selecting the final prefix, the launcher runs

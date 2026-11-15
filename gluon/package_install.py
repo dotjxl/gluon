@@ -69,7 +69,9 @@ def _deploy(source):
     result = subprocess.run(['/usr/bin/arch', '-arm64', '/usr/bin/python3', '-m', 'gluon', 'install'],
                             env=dict(os.environ, PYTHONPATH=str(home / 'lib')), capture_output=True, text=True)
     logs = home / 'logs'
-    logs.mkdir(exist_ok=True)
+    logs.mkdir(mode=0o700, exist_ok=True)
+    if not logs.is_symlink() and logs.stat().st_uid == os.getuid():
+        logs.chmod(0o700)
     (logs / 'install.log').write_text(result.stdout + result.stderr)
     if result.returncode:
         raise steamplay.SteamPlayError('Steam Play setup failed: ' + result.stderr.strip() + '\nSee ' + str(logs / 'install.log'))

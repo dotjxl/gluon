@@ -83,6 +83,15 @@ with tempfile.TemporaryDirectory() as temporary:
     entries[40]['config']['launch']['0']['config'] = {'oslist':'all'}
     entries[41]['config']['launch']['1'] = {'executable':'Native.app','config':{'oslist':'macos','osarch':'arm64','BetaKey':'beta'}}
     entries[42]['depots']['100'] = {'depotfromapp':'998'} # Unresolved native/shared platform is ambiguous.
+    for appid in range(43, 49):
+        entries[appid] = app(arch='32', common={'oslist': 'macos'})
+        entries[appid]['config']['launch'].pop('0')
+        entries[appid]['depots'].pop('101')
+    entries[44]['common']['osextended'] = 'macos64'
+    entries[45]['common']['oslist'] = 'macos,linux'
+    entries[46]['config']['launch']['2'] = {'executable': 'Game.exe', 'config': {'oslist': 'windows', 'betakey': 'beta'}}
+    entries[47]['depots']['102']['config'] = {'oslist': 'linux'}
+    entries[48]['config']['launch']['1']['config'].pop('osarch')
     entries[13]['config']['launch'].pop('0')  # No Windows build to run.
     entries[15]['config']['launch']['2'] = {'executable':'Game64.app', 'config':{'oslist':'macos','osarch':'64'}}
     macho32 = struct.pack('<IIIIIII', 0xfeedface, 7, 3, 2, 0, 0, 0)
@@ -137,6 +146,7 @@ with tempfile.TemporaryDirectory() as temporary:
     assert not {'3', '4', '5', '9', '10', '13', '15'} & fallback, '64-bit or Mac-only games must not use Wine'
     assert lists['mac32'] == '1,2,8,18,21,22,30', output
     assert lists['windows_launch_only'] == '34,39', output
+    assert lists['mac32_only'] == '43,48', output
     # A native64 executable vetoes metadata32 too, including universal binaries.
     entries[9]['config']['launch']['1']['config']['osarch'] = '32'
     entries[10]['config']['launch']['1']['config']['osarch'] = '32'
