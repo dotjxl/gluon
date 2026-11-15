@@ -7,11 +7,11 @@ Thanks to the NotProton developers for their code which helped me with full Stea
 
 Gluon hacks the mainframe in the Steam macOS client and injects the compatibility payload for ultimate performance. Okay now actually read below this
 
-Download the .pkg installer from the Build workflow in GitHub Actions. Make sure you download the installer, not the source code.
+Download the .pkg installer from Releases. The latest release is the most stable.
 
-Double-click the .pkg file and follow the instructions. If macOS asks for your password, enter it (I can't afford a $99/year subscription just to sign my apps.)
+Completely stop Steam and Wine.
 
-Restart Steam. Yes, you actually have to restart it. That's why the instructions say to restart it.
+Open the pkg. It will say something like "This program was blocked to protect your Mac." Go to Settings and then to Privacy & Security, scroll all the way down until you see "Security" and it should say "Gluon was blocked to protect your Mac." Click Allow, then follow the pkg instructions to install
 
 Download a Windows game from your Steam library and click Play. Gluon handles the compatibility process automatically.
 
