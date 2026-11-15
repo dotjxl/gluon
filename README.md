@@ -19,7 +19,7 @@ You do not need CrossOver, a separate NotProton installation, or any Terminal co
 
 Important: Gluon is experimental. Not every Windows game will work, and some Steam builds may be unsupported. If something doesn't work, please check the documentation, then make an issue.
 
-For the technologically literate:
+## For the technologically literate:
 
 Steam Play for macOS, using Gluon's Wine runtime and an integrated, GPLv3
 NotProton-derived Steam client library. CrossOver and a separate NotProton
