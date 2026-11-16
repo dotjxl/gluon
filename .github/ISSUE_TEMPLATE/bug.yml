@@ -3,7 +3,7 @@ description: Report a reproducible installation, launch, graphics, or compatibil
 body:
   - type: markdown
     attributes:
-      value: Check the [wiki](https://github.com/dotjxl/gluon/blob/main/docs/wiki/Home.md) and existing issues first. Review logs for private details before posting.
+      value: Check the [wiki](https://github.com/dotjxl/gluon/wiki) and existing issues first. Review logs for private details before posting.
   - type: input
     id: version
     attributes:
