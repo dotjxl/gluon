@@ -26,8 +26,15 @@ Games without these features do not start that helper.
 
 The helper logs Cloud and overlay/bundle preparation durations. The native host
 records time to shell startup, and default Wine diagnostic lines include elapsed
-timestamps. These separate launcher setup from later Wine, Steam IPC, graphics,
-and game loading; they do not time the first game window automatically.
+timestamps. The host also logs when it detects the first onscreen window owned
+by the game, including an elevated fullscreen window that covers a display.
+That timer starts at Gluon's native host. Use Steam's Play click as the starting
+point when reporting the full launch time.
+
+The Steam library reads the current stage for the selected game while it opens.
+The launcher records preparation, prefix work, and game startup in the existing
+log. The status clears when a game window appears, the session ends, or the
+observation times out.
 
 The native host starts its owned shell before AppKit registration and Steam
 owner lookup. Wine preparation can therefore overlap that native startup work.
