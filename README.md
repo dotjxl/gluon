@@ -3,7 +3,7 @@
 Gluon brings Steam Play to Apple silicon Macs. Install and launch supported Windows games from your Steam library using Gluon's bundled Wine runtime.
 
 - [Download a release](https://github.com/dotjxl/gluon/releases)
-- [Read the wiki](docs/wiki/Home.md)
+- [Read the wiki](https://github.com/dotjxl/gluon/wiki)
 - [Get help or report a bug](SUPPORT.md)
 
 ## Start here
