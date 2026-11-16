@@ -64,6 +64,39 @@ class UpdateTests(unittest.TestCase):
                     install.assert_called_once()
                     latest.assert_called_once()
 
+    def test_corrupt_staged_update_is_replaced_at_the_next_retry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            for directory in ("steamplay", "runtime"):
+                (home / directory).mkdir()
+            steamplay._write_json(home / "runtime/pending.json", {
+                "schema": 1, "name": "previous", "version": "0.5-rc.1",
+            })
+            payload = b"release"
+            release = updates.Release("0.5", len(payload), hashlib.sha256(payload).hexdigest())
+            now = 1000
+            with patch.object(steam, "GLUON_HOME", str(home)), \
+                 patch.object(updates.os, "getuid", return_value=home.stat().st_uid or 501), \
+                 patch.object(updates, "_enabled", return_value=True), \
+                 patch.object(updates.time, "time", return_value=now) as clock, \
+                 patch.object(updates, "_latest", return_value=release) as latest, \
+                 patch.object(updates, "build_opener") as opener, \
+                 patch.object(steamplay.Installation, "idle") as idle, \
+                 patch.object(steamplay, "_run"), patch.object(updates.package_install, "deploy") as deploy:
+                opener.return_value.open.side_effect = lambda *args, **kwargs: BytesIO(payload)
+                idle.side_effect = steamplay.SteamPlayError("busy")
+                updates.poll()
+                package = home / "updates/latest.pkg"
+                package.write_bytes(b"damaged")
+                idle.side_effect = None
+                self.assertIn("did not match the published SHA-256", updates.poll()[0])
+                self.assertFalse(package.exists())
+                deploy.assert_not_called()
+                clock.return_value = now + updates.RETRY_INTERVAL
+                self.assertIn("Updated Gluon to 0.5.", updates.poll())
+                self.assertEqual(latest.call_count, 2)
+                deploy.assert_called_once()
+
     def test_bad_digest_cannot_enter_the_install_queue(self):
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)
