@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 static atomic_int g_mac32 = -1;
@@ -53,6 +54,64 @@ static bool read_preference(const char *name, bool fallback) {
 bool gluon_settings_read_mac32(void) { return read_preference("auto-mac32", true); }
 bool gluon_settings_read_preload(void) { return read_preference("preload-wine", false); }
 bool gluon_settings_read_updates(void) { return read_preference("automatic-updates", false); }
+
+static unsigned launch_stage(uint32_t appid) {
+    char path[PATH_MAX], data[8193];
+    const char *user = np_home_dir(), *base = getenv("GLUON_HOME");
+    if (!user || !appid) return 0;
+    int n = base && *base ? snprintf(path, sizeof path, "%s/logs/launch-%u.log", base, appid) :
+        snprintf(path, sizeof path, "%s/Library/Application Support/Gluon/logs/launch-%u.log", user, appid);
+    if (n <= 0 || (size_t)n >= sizeof path) return 0;
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0) return 0;
+    struct stat info;
+    off_t start = 0;
+    ssize_t length = 0;
+    if (!fstat(fd, &info) && S_ISREG(info.st_mode) && info.st_uid == getuid() &&
+        difftime(time(NULL), info.st_mtime) <= 125.0) {
+        if (info.st_size > (off_t)(sizeof data - 1)) start = info.st_size - (sizeof data - 1);
+        length = pread(fd, data, sizeof data - 1, start);
+    }
+    close(fd);
+    if (length <= 0) return 0;
+    data[length] = '\0';
+
+    static const char marker[] = "gluon: launch stage ";
+    unsigned stage = 0;
+    pid_t owner = 0;
+    char *line = data;
+    if (start) {
+        line = strchr(line, '\n');
+        if (!line) return 0;
+        ++line;
+    }
+    for (char *end; (end = strchr(line, '\n')); line = end + 1) {
+        *end = '\0';
+        if (strncmp(line, marker, sizeof marker - 1)) continue;
+        const char *pid = line + sizeof marker - 1;
+        if (*pid < '1' || *pid > '9') continue;
+        char *phase;
+        unsigned long value = strtoul(pid, &phase, 10);
+        if (value <= 1 || value > INT_MAX || phase[0] != ' ' || phase[1] < '0' ||
+            phase[1] > '5' || phase[2]) continue;
+        unsigned next = (unsigned)(phase[1] - '0');
+        if (next == 1) owner = (pid_t)value;
+        if (owner == (pid_t)value) {
+            stage = next;
+            if (!next) owner = 0;
+        }
+    }
+    return stage && owner > 1 && kill(owner, 0) == 0 ? stage : 0;
+}
+
+int gluon_launch_query(uint32_t appid, const char *name) {
+    static const char prefix[] = "__gluon_launch_v1_bit_";
+    if (!name || strncmp(name, prefix, sizeof prefix - 1)) return 0;
+    const char *bit = name + sizeof prefix - 1;
+    if ((*bit != '0' && *bit != '1' && *bit != '2' && *bit != '4') || bit[1]) return -1;
+    unsigned stage = launch_stage(appid);
+    return (*bit == '0' ? stage != 0 : (stage & (unsigned)(*bit - '0')) != 0) ? 1 : -1;
+}
 
 // Run outside Steam's launch path. The helper uses a private prefix and exits
 // within a few seconds. Give it a minimal environment without Steam or dyld.

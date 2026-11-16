@@ -1,0 +1,69 @@
+Show the bounded launcher phase next to the Steam play controls.
+
+--- a/dylib/feats/compatsvc.c
++++ b/dylib/feats/compatsvc.c
+@@ -285,6 +285,8 @@
+                       ? *(const uint32_t *)(request + SPECIFY_APPID_OFF) : 0;
+     const char *tool  = string_field(request + SPECIFY_TOOL_NAME_OFF);
+     (void)response;
++    int launch = gluon_launch_query(appid, tool);
++    if (launch) return launch > 0 ? RESULT_OK : RESULT_FAIL;
+     int preference = gluon_settings_command(appid, tool);
+     if (preference) {
+         if (preference > 0) np_compatsvc_state_changed();
+--- a/dylib/hooks/hook_compat.c
++++ b/dylib/hooks/hook_compat.c
+@@ -137,6 +137,8 @@
+ static uint64_t hook_InternalSpecifyCompatTool(void *self, uint64_t appid,
+                                                const char *name, void *config,
+                                                int priority) {
++    int launch = gluon_launch_query(appid <= UINT32_MAX ? (uint32_t)appid : 0, name);
++    if (launch) return launch > 0;
+     int preference = gluon_settings_command((uint32_t)appid, name);
+     if (preference) {
+         if (preference > 0) np_compatsvc_state_changed();
+--- a/dylib/feats/webpatch.c
++++ b/dylib/feats/webpatch.c
+@@ -380,8 +380,9 @@
+       GLUON_INVALID_OS_GETTER, 1, 0 },
+     // Reminder banner for 32 bit Mac games
+     { NP_C1 ".is_invalid_os_type&&(0," NP_C2 ".jsx)(" NP_C3 ",{})",
++      "(0," NP_C2 ".jsxs)(" NP_C2 ".Fragment,{children:[globalThis.__GLUON_SETTINGS__.launchStatus(" NP_C2 ".jsx," NP_C1 ".appid),"
+       "(globalThis.__GLUON_SETTINGS__.macOnlyLabel(" NP_C2 ".jsx," NP_C1 ".appid)"
+-      "||(Boolean(" NP_C1 ".is_invalid_os_type)&&(0," NP_C2 ".jsx)(" NP_C3 ",{})))", 1, 0 },
++      "||(Boolean(" NP_C1 ".is_invalid_os_type)&&(0," NP_C2 ".jsx)(" NP_C3 ",{})))]})", 1, 0 },
+     { "(0," NP_C1 ".we)(\"#GameList_Entry_Invalid_OSType2\")",
+       NP_COMPAT_HINT, 1, 0 },
+ };
+@@ -419,8 +420,9 @@
+       GLUON_INVALID_OS_GETTER, 1, 0 },
+     // Reminder banner for 32 bit Mac games
+     { NP_C1 ".is_invalid_os_type&&(0," NP_C2 ".jsx)(" NP_C3 ",{})",
++      "(0," NP_C2 ".jsxs)(" NP_C2 ".Fragment,{children:[globalThis.__GLUON_SETTINGS__.launchStatus(" NP_C2 ".jsx," NP_C1 ".appid),"
+       "(globalThis.__GLUON_SETTINGS__.macOnlyLabel(" NP_C2 ".jsx," NP_C1 ".appid)"
+-      "||(Boolean(" NP_C1 ".is_invalid_os_type)&&(0," NP_C2 ".jsx)(" NP_C3 ",{})))", 1, 0 },
++      "||(Boolean(" NP_C1 ".is_invalid_os_type)&&(0," NP_C2 ".jsx)(" NP_C3 ",{})))]})", 1, 0 },
+     { "(0," NP_C1 ".we)(\"#GameList_Entry_Invalid_OSType2\")",
+       NP_COMPAT_HINT, 1, 0 },
+ };
+@@ -438,6 +440,11 @@
+     NP_MAC_64(APP) ";"
+ 
+ static const np_gate_t g_fixes[] = {
++    // Capture the library's own transport when the CompatManager module loads.
++    { "{ePrivilege:1,eClientExecutionSite:2})}" NP_C1 ".SpecifyCompatTool=" NP_C2 ";",
++      "{ePrivilege:1,eClientExecutionSite:2})}" NP_C1 ".SpecifyCompatTool=" NP_C2 ";"
++      "globalThis.__GLUON_SETTINGS__.launchQuery=async(id,name)=>{const reply=await " NP_C2
++      "({appid:id,tool_name:name});return reply?.BSuccess?.()===true};", 1, 1 },
+     // Steam's stock mutation discards the server response. Gluon's preference
+     // switch needs the real completion result before reporting a saved change.
+     { NP_C1 "=" NP_C2 ".useCallback(" NP_C3 "=>{" NP_C4 ".SpecifyCompatTool({appid:"
+--- a/dylib/tests/compatsvc-check.c
++++ b/dylib/tests/compatsvc-check.c
+@@ -147,5 +147,6 @@
+ }
+ 
+ int gluon_settings_command(uint32_t appid, const char *name) { (void)appid; (void)name; return 0; }
++int gluon_launch_query(uint32_t appid, const char *name) { (void)appid; (void)name; return 0; }
+ 
+ #include "../feats/compatsvc.c"

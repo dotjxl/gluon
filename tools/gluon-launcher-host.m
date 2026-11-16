@@ -117,12 +117,21 @@ static NSRunningApplication *steam_owner(NSString *directory)
 @property(nonatomic) NSTimeInterval launchTime;
 @property(nonatomic, strong) NSString *gameBundleDirectory;
 @property(nonatomic, strong) NSString *gameBundleIdentifier;
+@property(nonatomic) pid_t firstWindowOwner;
+@property(nonatomic) BOOL observingLaunch;
 - (void)poll;
 - (void)startChild;
 - (void)recordFirstGameWindow;
 @end
 
 @implementation GluonLauncherHost
+- (void)endLaunchObservation
+{
+    if (!self.observingLaunch) return;
+    self.observingLaunch = NO;
+    fprintf(stderr, "gluon: launch stage %d 0\n", getpid());
+}
+
 - (instancetype)init
 {
     if ((self = [super init])) _steamLog = -1;
@@ -133,6 +142,7 @@ static NSRunningApplication *steam_owner(NSString *directory)
 {
     if (self.finished) return;
     self.finished = YES;
+    [self endLaunchObservation];
     self.result = status;
     [self.timer invalidate];
     self.timer = nil;
@@ -170,6 +180,7 @@ static NSRunningApplication *steam_owner(NSString *directory)
 {
     if (self.finished || self.stopping) return;
     self.stopping = YES;
+    [self endLaunchObservation];
     if (!self.child)
     {
         [self finish:128 + number];
@@ -261,7 +272,7 @@ static NSRunningApplication *steam_owner(NSString *directory)
 - (void)poll
 {
     if (self.finished || [self reap]) return;
-    if (!self.stopping && self.gameBundleDirectory) [self recordFirstGameWindow];
+    if (!self.stopping && self.observingLaunch) [self recordFirstGameWindow];
     if (self.raiseDeadline && !self.stopping)
     {
         if (NSProcessInfo.processInfo.systemUptime >= self.raiseDeadline)
@@ -305,30 +316,35 @@ static NSRunningApplication *steam_owner(NSString *directory)
     }
 }
 
-- (void)recordFirstGameWindow
+static BOOL covers_display(CGRect bounds)
 {
-    double now = NSProcessInfo.processInfo.systemUptime;
-    if (now - host_started > 45.0)
-    {
-        self.gameBundleDirectory = nil;
-        return;
-    }
-    if (now < self.windowCheckAfter) return;
-    self.windowCheckAfter = now + 0.15;
+    CGDirectDisplayID displays[8];
+    uint32_t count = 0;
+    if (CGGetDisplaysWithRect(bounds, sizeof displays / sizeof displays[0], displays, &count)) return NO;
+    for (uint32_t i = 0; i < count; ++i)
+        if (CGRectContainsRect(CGRectInset(bounds, -2, -2), CGDisplayBounds(displays[i]))) return YES;
+    return NO;
+}
 
+- (pid_t)gameWindowOwnerOnscreen:(BOOL)onscreen
+{
+    if (!self.gameBundleDirectory) return 0;
     // Inspect window ownership and bounds only. Skip hidden windows, helpers,
     // and overlays. A directly spawned Wine process may have no LaunchServices
     // registration, so match the executable belonging to the window's PID.
-    NSArray<NSDictionary *> *windows = CFBridgingRelease(CGWindowListCopyWindowInfo(
-        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID));
+    CGWindowListOption options = kCGWindowListExcludeDesktopElements;
+    if (onscreen) options |= kCGWindowListOptionOnScreenOnly;
+    NSArray<NSDictionary *> *windows = CFBridgingRelease(CGWindowListCopyWindowInfo(options, kCGNullWindowID));
     for (NSDictionary *window in windows)
     {
-        if ([window[(__bridge NSString *)kCGWindowLayer] intValue] != 0 ||
-            [window[(__bridge NSString *)kCGWindowAlpha] doubleValue] <= 0) continue;
+        int level = [window[(__bridge NSString *)kCGWindowLayer] intValue];
+        if (level < kCGNormalWindowLevel || [window[(__bridge NSString *)kCGWindowAlpha] doubleValue] <= 0) continue;
         NSDictionary *bounds = window[(__bridge NSString *)kCGWindowBounds];
         CGRect rect;
         if (!bounds || !CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)bounds, &rect) ||
             rect.size.width < 72 || rect.size.height < 48) continue;
+        // Wine elevates exclusive fullscreen above the menu and Dock. Verify
+        // that an elevated window actually covers a display before counting it.
         pid_t pid = [window[(__bridge NSString *)kCGWindowOwnerPID] intValue];
         char path[PROC_PIDPATHINFO_MAXSIZE];
         if (pid <= 0) continue;
@@ -343,11 +359,24 @@ static NSRunningApplication *steam_owner(NSString *directory)
         struct proc_bsdinfo info;
         if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, sizeof(info)) != sizeof(info) ||
             (double)info.pbi_start_tvsec + (double)info.pbi_start_tvusec / 1000000.0 < self.launchTime) continue;
-        fprintf(stderr, "gluon: first visible game window after %.1f ms\n",
-                (NSProcessInfo.processInfo.systemUptime - host_started) * 1000.0);
-        self.gameBundleDirectory = nil;
-        return;
+        if ((level != kCGNormalWindowLevel || !onscreen) && !covers_display(rect)) continue;
+        return pid;
     }
+    return 0;
+}
+
+- (void)recordFirstGameWindow
+{
+    double now = NSProcessInfo.processInfo.systemUptime;
+    if (now - host_started > 120.0) { [self endLaunchObservation]; return; }
+    if (now < self.windowCheckAfter) return;
+    self.windowCheckAfter = now + (now - host_started < 12.0 ? 0.15 : 0.4);
+    pid_t owner = [self gameWindowOwnerOnscreen:YES];
+    if (!owner) return;
+    self.firstWindowOwner = owner;
+    fprintf(stderr, "gluon: first visible game window after %.1f ms\n",
+            (NSProcessInfo.processInfo.systemUptime - host_started) * 1000.0);
+    [self endLaunchObservation];
 }
 
 /* Runs on the watcher thread only. Steam sends SteamShutdown_t to connected
@@ -503,16 +532,17 @@ static NSRunningApplication *steam_owner(NSString *directory)
 
 - (BOOL)handActivationToGame
 {
-    const char *value = getenv("STEAM_COMPAT_APP_ID");
-    if (!value || !*value) value = getenv("SteamAppId");
-    NSString *appid = value && *value ? [NSString stringWithUTF8String:value] : nil;
-    if (!appid) return NO;
-    NSString *identifier = [@"org.gluon.game." stringByAppendingString:appid];
+    if (!self.gameBundleIdentifier) return NO;
+    pid_t owner = [self gameWindowOwnerOnscreen:YES];
+    if (!owner) owner = [self gameWindowOwnerOnscreen:NO];
+    if (!owner) owner = self.firstWindowOwner;
+    if (!owner) return NO;
     for (NSRunningApplication *app in [NSRunningApplication
-        runningApplicationsWithBundleIdentifier:identifier])
+        runningApplicationsWithBundleIdentifier:self.gameBundleIdentifier])
     {
         /* Only the game's window process is a regular app; Wine's helpers are not. */
-        if (app.terminated || app.activationPolicy != NSApplicationActivationPolicyRegular) continue;
+        if (app.terminated || app.processIdentifier != owner ||
+            app.activationPolicy != NSApplicationActivationPolicyRegular) continue;
         if (@available(macOS 14.0, *))
         {
             [NSApp yieldActivationToApplication:app];
@@ -589,6 +619,12 @@ int main(int argc, char **argv)
         const char *appid = getenv("STEAM_COMPAT_APP_ID");
         if (!appid || !*appid) appid = getenv("SteamAppId");
         if (!appid || !*appid) appid = getenv("SteamGameId");
+        if (!appid || !*appid || !strcmp(appid, "0"))
+        {
+            const char *compat = getenv("STEAM_COMPAT_DATA_PATH");
+            const char *slash = compat ? strrchr(compat, '/') : NULL;
+            appid = slash ? slash + 1 : compat;
+        }
         if (appid && *appid && strspn(appid, "0123456789") == strlen(appid))
         {
             host.launchTime = NSDate.date.timeIntervalSince1970;
@@ -599,6 +635,11 @@ int main(int argc, char **argv)
             if (home.isAbsolutePath)
                 host.gameBundleDirectory = [home.stringByStandardizingPath.stringByResolvingSymlinksInPath
                     stringByAppendingFormat:@"/apps.noindex/%s/", appid];
+        }
+        if (host.gameBundleDirectory)
+        {
+            host.observingLaunch = YES;
+            fprintf(stderr, "gluon: launch stage %d 1\n", getpid());
         }
         /* Reuse the original argv allocation without copying argument bytes. */
         argv[0] = "/bin/bash";
