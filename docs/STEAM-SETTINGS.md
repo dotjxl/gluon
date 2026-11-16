@@ -43,9 +43,10 @@ page reports the result and shares the updated preference with other Steam
 windows on the same origin.
 
 **Preload Wine** is off by default. When enabled, Gluon warms the packaged Wine
-executables at low priority after Steam starts and asks macOS to read ahead on
-the most recently launched Steam game's executable. It also warms once when
-first enabled. The version checks use a disposable directory and exit on their own.
+executables and startup libraries at low priority after Steam starts. macOS also
+reads ahead on the last Steam game's executable and common Chromium startup data.
+It runs once when first enabled, too. The Wine version checks use a disposable
+directory and exit on their own.
 
 **Automatically update Gluon** is off by default. Turn it on to check the
 official GitHub release channel every six hours. Gluon downloads stable releases
