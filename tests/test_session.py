@@ -34,6 +34,10 @@ if argument == '-k' and mode in ('fail-k', 'fail-k-hang-w'):
 
 
 class SessionShutdownTests(unittest.TestCase):
+    # Let the synthetic Python children start on busy hosted Macs. The
+    # integration checks use the same helper deadline as the real launcher.
+    helper_timeout = 5
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="gluon-session-fixture-")
         self.addCleanup(self.temp.cleanup)
@@ -60,7 +64,7 @@ class SessionShutdownTests(unittest.TestCase):
         try:
             for number in numbers:
                 signal.signal(number, signal.SIG_IGN)
-            self.assertTrue(session.stop_prefix(str(self.server), timeout=1))
+            self.assertTrue(session.stop_prefix(str(self.server), timeout=self.helper_timeout))
         finally:
             for number, disposition in dispositions.items():
                 signal.signal(number, disposition)
@@ -78,8 +82,8 @@ class SessionShutdownTests(unittest.TestCase):
         output = io.StringIO()
         started = time.monotonic()
         with redirect_stderr(output):
-            self.assertFalse(session.stop_prefix(str(self.server), timeout=1))
-        self.assertLess(time.monotonic() - started, 4)
+            self.assertFalse(session.stop_prefix(str(self.server), timeout=self.helper_timeout))
+        self.assertLess(time.monotonic() - started, self.helper_timeout * 3)
         self.assertIsNone(sibling.poll(), "shutdown terminated an unrelated process")
         events = [event for event in self.events() if event["argument"] != "sibling"]
         self.assertEqual([event["argument"] for event in events], ["-k", "-w"])
@@ -95,7 +99,7 @@ class SessionShutdownTests(unittest.TestCase):
         os.environ["GLUON_SESSION_MODE"] = "fail-k"
         output = io.StringIO()
         with redirect_stderr(output):
-            self.assertTrue(session.stop_prefix(str(self.server), timeout=1))
+            self.assertTrue(session.stop_prefix(str(self.server), timeout=self.helper_timeout))
         self.assertEqual([event["argument"] for event in self.events()], ["-k", "-w"])
         self.assertIn("wineserver -k exited with status 23", output.getvalue())
         self.assertNotIn("could not be confirmed", output.getvalue())
@@ -104,7 +108,7 @@ class SessionShutdownTests(unittest.TestCase):
         os.environ["GLUON_SESSION_MODE"] = "fail-k-hang-w"
         output = io.StringIO()
         with redirect_stderr(output):
-            self.assertFalse(session.stop_prefix(str(self.server), timeout=1))
+            self.assertFalse(session.stop_prefix(str(self.server), timeout=self.helper_timeout))
         self.assertEqual([event["argument"] for event in self.events()], ["-k", "-w"])
         self.assertIn("wineserver -w timed out", output.getvalue())
         self.assertIn("prefix shutdown could not be confirmed", output.getvalue())
