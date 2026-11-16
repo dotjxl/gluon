@@ -52,7 +52,7 @@ Show the bounded launcher phase next to the Steam play controls.
  static const np_gate_t g_fixes[] = {
 +    // Capture the library's own transport when the CompatManager module loads.
 +    { "{ePrivilege:1,eClientExecutionSite:2})}" NP_C1 ".SpecifyCompatTool=" NP_C2 ";",
-+      "{ePrivilege:1,eClientExecutionSite:2})}" NP_C1 ".SpecifyCompatTool=" NP_C2 ";"
++      "{ePrivilege:1,eClientExecutionSite:2})}" NP_C1 ".SpecifyCompatTool=(" NP_C2 ");"
 +      "globalThis.__GLUON_SETTINGS__.launchQuery=async(id,name)=>{const reply=await " NP_C2
 +      "({appid:id,tool_name:name});return reply?.BSuccess?.()===true};", 1, 1 },
      // Steam's stock mutation discards the server response. Gluon's preference
