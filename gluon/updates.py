@@ -203,6 +203,10 @@ def poll():
         except (UpdateError, steamplay.SteamPlayError, runtime.RuntimeSelectionError, steam.SteamError,
                 OSError, ValueError, subprocess.SubprocessError) as error:
             state["install_after"] = now + RETRY_INTERVAL
+            # A failed checksum discards the staged file. Check for a replacement
+            # at the install retry instead of waiting for the regular release check.
+            if not package.is_file():
+                state["check_after"] = min(state["check_after"], state["install_after"])
             steamplay._write_json(cache, state)
             messages.append(f"Could not install Gluon {release.version}: {error}")
         return messages
