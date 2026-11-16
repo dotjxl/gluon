@@ -1,5 +1,7 @@
 # Gluon
 
+![Gluon slogan](gluon-slogan.svg)
+
 Gluon brings Steam Play to Apple silicon Macs. Install and launch supported Windows games from your Steam library using Gluon's bundled Wine runtime.
 
 - [Download a release](https://github.com/dotjxl/gluon/releases)
@@ -8,13 +10,15 @@ Gluon brings Steam Play to Apple silicon Macs. Install and launch supported Wind
 
 ## Start here
 
-Use Steam on an Apple silicon Mac with Rosetta available. Open the Gluon `.pkg`, follow the installer prompts, then restart Steam. Install or play a Windows game from your library. For a particular game, use **Properties → Compatibility** to choose Gluon explicitly. Read the [installation and repair guide](docs/wiki/Getting-Started.md) for custom Steam locations and recovery.
+Use Steam on an Apple silicon Mac with Rosetta available. Download the `.pkg` and its checksum from the same release or Actions run. Quit Steam and Wine, verify the download, and open the installer. If macOS offers **Open Anyway** for the verified package, look under **System Settings → Privacy & Security**. Follow the prompts, then reopen Steam. A normal installation uses the bundled runtime and needs no Terminal setup. [Installation and repair guide](docs/wiki/Getting-Started.md) · [Builds and checksum verification](docs/wiki/Releases-and-Updates.md).
+
+Install or play a Windows game from your library. For a particular game, use **Properties → Compatibility** to choose Gluon when Steam offers it.
 
 While a game opens, the Steam library can show Gluon's current launch stage next to the Play controls. **Steam → Settings → Gluon** controls Windows routing for eligible legacy Mac games, Wine preload, and automatic updates. [See the settings guide](docs/STEAM-SETTINGS.md).
 
 ## Compatibility
 
-Game compatibility varies. The runtime includes DXMT for Direct3D 10/11, DXVK for Direct3D 9, MoltenVK for Vulkan, and Wine's macOS OpenGL driver. [See graphics options and known limits](docs/wiki/Graphics-and-Compatibility.md). Use the [troubleshooting guide](docs/wiki/Troubleshooting.md) for missing windows, graphics errors, slow starts, and installer errors.
+Gluon is experimental. Game compatibility varies, and Steam integration requires a client that passes runtime validation. The runtime includes DXMT for Direct3D 10/11, DXVK for Direct3D 9, MoltenVK for Vulkan, and Wine's macOS OpenGL driver. [Graphics options and known limits](docs/wiki/Graphics-and-Compatibility.md) · [Troubleshooting](docs/wiki/Troubleshooting.md).
 
 Gluon configures and locally signs a modified Steam application. It retains a verified restoration copy and uses Steam's own compatibility manager and Cloud sync. [Read how the integration and recovery work](docs/STEAMPLAY.md).
 
