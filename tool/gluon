@@ -348,6 +348,24 @@ if [ -n "$game_session" ] && [ -n "$GLUON_EXTRA_ARGS" ]; then
     set -- "$@" $GLUON_EXTRA_ARGS
 fi
 
+# Happy Wheels' native presenter waits ten seconds for shared textures that
+# never arrive under Wine. Its classic window keeps Chromium's compositing
+# and Steam integration without going through that offscreen presenter.
+if [ -n "$game_session" ] && [ "$kind" = wine ] && [ -z "$GLUON_NO_AUTO_ARGS" ] \
+    && [ "${GLUON_HAPPY_WHEELS_CLASSIC_WINDOW:-1}" != 0 ] && [ "$appid" = 4705510 ] \
+    && [ "${exe##*/}" = 'Happy Wheels.exe' ] && [ -f "$exe_dir/resources/app.asar" ]; then
+    has_classic_window=""
+    for argument in "$@"; do
+        case "$argument" in
+            --classic-window|--classic-window=*) has_classic_window=1; break ;;
+        esac
+    done
+    if [ -z "$has_classic_window" ]; then
+        log "  Happy Wheels: using the classic window to skip the shared-texture timeout"
+        set -- "$@" --classic-window
+    fi
+fi
+
 # Steam API bridge: when the runtime carries it, the game is started through its helper
 # so that the game's steam_api finds the running Mac Steam client.
 steam_bridge=""

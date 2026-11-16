@@ -116,8 +116,8 @@ with open(output, 'w') as out, open(errors, 'w') as err:
         (runtime / "licenses").mkdir()
         return runtime
 
-    def run_launcher(self, *arguments, **environment):
-        result = subprocess.run([str(self.launcher), "run", str(self.game), *arguments],
+    def run_launcher(self, *arguments, verb="run", **environment):
+        result = subprocess.run([str(self.launcher), verb, str(self.game), *arguments],
                                 env=dict(self.environment, **environment),
                                 capture_output=True, text=True, timeout=5)
         events = ([json.loads(line) for line in self.trace.read_text().splitlines()]
@@ -271,6 +271,30 @@ with open(output, 'w') as out, open(errors, 'w') as err:
         self.assertIsNone(game["chromium_overlay_scope"])
         self.assertIsNone(game["chromium_overlay_image"])
         self.assertNotIn("--in-process-gpu", game["args"])
+
+    def test_happy_wheels_uses_classic_window_without_changing_other_launches(self):
+        self.game = self.game.rename(self.game.with_name("Happy Wheels.exe"))
+        resources = self.game.parent / "resources"
+        resources.mkdir()
+        (resources / "app.asar").touch()
+        runtime = self.runtime()
+        cases = (
+            ("4705510", (), 1),
+            ("4705510", ("--classic-window",), 1),
+            ("4705510", ("GLUON_HAPPY_WHEELS_CLASSIC_WINDOW=0",), 0),
+            ("123", (), 0),
+        )
+        for appid, arguments, expected in cases:
+            with self.subTest(appid=appid, arguments=arguments):
+                self.trace.unlink(missing_ok=True)
+                result, events = self.run_launcher(*arguments, verb="waitforexitandrun",
+                                                  STEAM_COMPAT_APP_ID=appid,
+                                                  GLUON_RUNTIME=str(runtime))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                game = next(event for event in events if event["role"] == "wine"
+                            and str(self.game) in event["args"])
+                self.assertEqual(game["args"].count("--classic-window"), expected)
+                self.assertIn("--in-process-gpu", game["args"])
 
     def test_proton_does_not_receive_plain_wine_chromium_overlay_marker(self):
         runtime = self.runtime(proton=True)
