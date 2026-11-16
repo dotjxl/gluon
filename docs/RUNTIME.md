@@ -45,6 +45,7 @@ Native install helpers retain their original argument strings.
 | `GLUON_CAFFEINATE` | `1` | Keep the display/system awake during a game |
 | `WINEMSYNC` | `1` | Mach semaphore synchronization for plain Wine |
 | `GLUON_GL_COMPAT_AS_CORE` | `0` | Opt in to mapping OpenGL 3.0–4.1 compatibility requests onto Apple's core profile |
+| `GLUON_HAPPY_WHEELS_CLASSIC_WINDOW` | `1` | Start Happy Wheels in its built-in classic window to skip the native presenter's ten-second shared-texture timeout. Set to `0` to use the game's default. |
 
 The OpenGL mapping does not supply removed compatibility features, so enable it
 per game when appropriate. The checked GL/WGL aliases and Vulkan 1.0/1.3 device
