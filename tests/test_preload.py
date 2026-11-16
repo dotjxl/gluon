@@ -7,6 +7,32 @@ from gluon import preload
 
 
 class PreloadTests(unittest.TestCase):
+    def test_game_read_ahead_caps_chromium_files_and_skips_linked_resources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            (home / "steamplay").mkdir()
+            (home / "steamplay/preload-wine").write_text("1\n")
+            game = home / "game"
+            game.mkdir()
+            exe = game / "game.exe"
+            other = home / "other"
+            other.mkdir()
+            (other / "app.asar").touch()
+            (game / "resources").symlink_to(other)
+            (game / "chrome_100_percent.pak").touch()
+            calls = []
+
+            def read_ahead(path, limit):
+                calls.append((path.relative_to(game).as_posix(), limit))
+                return 32 * 1024 * 1024 if path.name == "icudtl.dat" else 0
+
+            with patch("gluon.preload._advise", side_effect=read_ahead):
+                preload._warm_game(home, exe)
+            self.assertEqual(calls[:2], [("game.exe", 256 * 1024 * 1024),
+                                         ("icudtl.dat", 48 * 1024 * 1024)])
+            self.assertEqual(calls[2][1], 16 * 1024 * 1024)
+            self.assertNotIn("resources/app.asar", dict(calls))
+
     def test_opt_in_uses_only_the_packaged_wine_and_a_disposable_prefix(self):
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary).resolve()
