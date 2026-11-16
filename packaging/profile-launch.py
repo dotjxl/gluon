@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare released and candidate wrapper/Wine startup on an isolated Actions Mac.
+"""Measure launcher startup and first visible Windows app window on an Actions Mac.
 
 The Windows command fixture has no game, network, GPU, overlay or Steam IPC.
 Time to its first file write measures startup overhead, not game load time.
@@ -7,6 +7,7 @@ Time to its first file write measures startup overhead, not game load time.
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import statistics
 import subprocess
@@ -97,6 +98,48 @@ medians = {label: round(statistics.median(r['ready_seconds'] for r in rows
            for label in ('released', 'candidate')}
 (probes / 'launch-profile.json').write_text(json.dumps({'samples': rows, 'warm_medians': medians}, indent=2))
 print('Windows command fixture startup (no game/Steam/GPU):', medians)
+
+# Compare the two bundle entry points with the same runtime, prefix and GUI
+# program. Measure from the same Steam-tool entry point until macOS reports
+# a window owned by this launch. Alternate the order to reduce cache bias.
+fixture_home = probes / 'profile-candidate'
+shim = fixture_home / 'compatibilitytools.d/gluon-proton/run'
+launch_log = fixture_home / 'logs/launch-123.log'
+visible_samples = {'direct': [], 'launchservices': []}
+notepad = runtime / 'lib/wine/x86_64-windows/notepad.exe'
+if not notepad.is_file():
+    raise RuntimeError('Missing Windows GUI launch fixture')
+for mode in ('launchservices', 'direct', 'direct', 'launchservices'):
+    offset = launch_log.stat().st_size
+    env = dict(base_env, GLUON_HOME=str(fixture_home), GLUON_USE_LAUNCHSERVICES='1' if mode == 'launchservices' else '0')
+    started = time.monotonic()
+    with (probes / ('visible-launch-%s-%s.log' % (mode, len(visible_samples[mode])))).open('w') as output:
+        process = subprocess.Popen(['/bin/sh', str(shim), 'waitforexitandrun', str(notepad)],
+                                   env=env, stdout=output, stderr=subprocess.STDOUT)
+        try:
+            with launch_log.open() as log:
+                log.seek(offset)
+                deadline = started + 25
+                while time.monotonic() < deadline and process.poll() is None:
+                    lines = log.read()
+                    if re.search(r'first visible game window after [0-9.]+ ms', lines):
+                        visible_samples[mode].append(round(time.monotonic() - started, 4))
+                        break
+                    time.sleep(.02)
+                else:
+                    raise RuntimeError(f'No visible window detected for {mode}. See {launch_log}.')
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=25)
+            subprocess.run([str(runtime / 'bin/wineserver'), '-k'], env=env, timeout=10)
+            subprocess.run([str(runtime / 'bin/wineserver'), '-w'], env=env, timeout=10, check=True)
+    (probes / f'visible-first-window-{mode}.log').write_bytes(launch_log.read_bytes()[offset:])
+visible_medians = {name: round(statistics.median(samples), 4) for name, samples in visible_samples.items()}
+(probes / 'visible-launch-profile.json').write_text(json.dumps({
+    'samples': visible_samples, 'medians': visible_medians,
+}, indent=2))
+print('First visible Notepad window from compatibility-tool entry:', visible_medians)
 scan_code = None
 with (probes / 'wine-memory-target.log').open('w') as log:
     target = subprocess.Popen([str(runtime / 'bin/wine'), 'notepad.exe'],
@@ -134,4 +177,8 @@ if summary:
         output.write('\nLaunch profile: isolated Windows command; excludes game, Steam IPC and GPU loading.\n\n')
         output.write('| Version | Median repeat launch |\n|---|---|\n')
         for label, seconds in medians.items():
+            output.write('| %s | %.4f s |\n' % (label, seconds))
+        output.write('\nFirst visible Notepad window from the compatibility-tool entry point.\n\n')
+        output.write('| Bundle launch | Median |\n|---|---|\n')
+        for label, seconds in visible_medians.items():
             output.write('| %s | %.4f s |\n' % (label, seconds))

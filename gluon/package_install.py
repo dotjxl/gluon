@@ -127,6 +127,26 @@ def _stage(source, home, directories):
                 shutil.rmtree(temporary)
 
 
+def _stage_package(source, home, directories, request):
+    # A launcher-only update must keep the existing Wine loader (and game
+    # bundle hard links) when all runtime files and modes match the package.
+    current = runtime._current(home / "runtime/current")
+    installed = runtime._request(home / "runtime/pending.json")
+    if (installed and current == installed["name"] and current.startswith("gluon-runtime-")
+            and current != request["name"]):
+        existing = home / "runtime" / current
+        incoming = source / directories[0]
+        key = ".gluon-runtime-build-key"
+        if (not existing.is_symlink() and not incoming.is_symlink()
+                and (existing / key).is_file() and (incoming / key).is_file()
+                and (existing / key).read_bytes() == (incoming / key).read_bytes()
+                and steamplay._tree(existing) == steamplay._tree(incoming)):
+            _stage(source, home, directories[1:])
+            return dict(request, name=current)
+    _stage(source, home, directories)
+    return request
+
+
 def _deploy(source, *, quit_apps=False, update_version=None):
     source = Path(source).resolve(strict=True)
     home = Path(steam.GLUON_HOME)
@@ -146,14 +166,14 @@ def _deploy(source, *, quit_apps=False, update_version=None):
         _quit_running_apps(installation)
     installation.idle()
     subprocess.run(['/bin/launchctl', 'bootout', 'gui/%d/com.gluon.agent' % os.getuid()], capture_output=True)
-    _stage(source, home, directories)
+    request = _stage_package(source, home, directories, request)
     # Scripts and Python modules are small; copy while all native sessions are idle.
     for directory in ('bin', 'lib'):
         steamplay.System().copy(source / directory, home / directory)
     for retired in ('enable.py', 'metadata.py'):
         (home / 'lib/gluon' / retired).unlink(missing_ok=True)
-    for relative in ('runtime/pending.json', 'steamplay/pending.json'):
-        steamplay._atomic(home / relative, (source / relative).read_bytes())
+    steamplay._write_json(home / 'runtime/pending.json', request)
+    steamplay._atomic(home / 'steamplay/pending.json', (source / 'steamplay/pending.json').read_bytes())
     # Use the just-installed code. The environment is set by the privileged wrapper
     # to this account's HOME; no privileged interpreter imports from the home folder.
     result = subprocess.run(['/usr/bin/arch', '-arm64', '/usr/bin/python3', '-m', 'gluon', 'install'],
@@ -186,7 +206,7 @@ def _apply_update(source, installation, directories, request):
     if len(apps) != 1:
         raise steamplay.SteamPlayError("Automatic updates require an existing Gluon Steam installation.")
     installation.idle()
-    _stage(source, home, directories)
+    request = _stage_package(source, home, directories, request)
     candidate = steamplay.Installation(home)
     candidate.payload = home / directories[1]
     candidate.payload_check()
@@ -211,8 +231,8 @@ def _apply_update(source, installation, directories, request):
             os.rename(home / directory, save / directory)
             moved.append(directory)
             os.rename(save / (directory + "-new"), home / directory)
-        for name in selections:
-            steamplay._atomic(home / name, (source / name).read_bytes())
+        steamplay._write_json(home / selections[0], request)
+        steamplay._atomic(home / selections[1], (source / selections[1]).read_bytes())
         runtime.activate_pending(home=str(home))
         if runtime._current(current) != request["name"]:
             raise steamplay.SteamPlayError("Steam or Wine reopened before the update could finish.")

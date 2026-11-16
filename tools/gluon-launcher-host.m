@@ -2,6 +2,7 @@
  * Wine and all prefix cleanup remain in the shell child, which this host owns.
  */
 #import <AppKit/AppKit.h>
+#import <CoreGraphics/CoreGraphics.h>
 #import <spawn.h>
 #import <sys/wait.h>
 #import <signal.h>
@@ -110,8 +111,12 @@ static NSRunningApplication *steam_owner(NSString *directory)
 @property(nonatomic, strong) NSMutableData *steamLogLine;
 @property(nonatomic) double steamExitDeadline;
 @property(nonatomic) double raiseDeadline;
+@property(nonatomic) double windowCheckAfter;
+@property(nonatomic, strong) NSDate *launchDate;
+@property(nonatomic, strong) NSString *gameBundleIdentifier;
 - (void)poll;
 - (void)startChild;
+- (void)recordFirstGameWindow;
 @end
 
 @implementation GluonLauncherHost
@@ -253,6 +258,7 @@ static NSRunningApplication *steam_owner(NSString *directory)
 - (void)poll
 {
     if (self.finished || [self reap]) return;
+    if (!self.stopping && self.gameBundleIdentifier) [self recordFirstGameWindow];
     if (self.raiseDeadline && !self.stopping)
     {
         if (NSProcessInfo.processInfo.systemUptime >= self.raiseDeadline)
@@ -293,6 +299,48 @@ static NSRunningApplication *steam_owner(NSString *directory)
     {
         fprintf(stderr, "gluon: launcher child did not reap after forced cleanup; prefix shutdown unconfirmed\n");
         [self finish:124];
+    }
+}
+
+- (void)recordFirstGameWindow
+{
+    double now = NSProcessInfo.processInfo.systemUptime;
+    if (now - host_started > 45.0)
+    {
+        self.gameBundleIdentifier = nil;
+        return;
+    }
+    if (now < self.windowCheckAfter) return;
+    self.windowCheckAfter = now + 0.15;
+
+    NSMutableSet<NSNumber *> *owners = [NSMutableSet new];
+    for (NSRunningApplication *app in [NSRunningApplication
+        runningApplicationsWithBundleIdentifier:self.gameBundleIdentifier])
+    {
+        if (!app.terminated && app.launchDate &&
+            [app.launchDate compare:self.launchDate] != NSOrderedAscending)
+            [owners addObject:@(app.processIdentifier)];
+    }
+    if (!owners.count) return;
+
+    // Inspect window ownership and bounds only. Skip hidden windows, helpers,
+    // and overlays. This does not read window contents or titles.
+    NSArray<NSDictionary *> *windows = CFBridgingRelease(CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID));
+    for (NSDictionary *window in windows)
+    {
+        NSNumber *pid = window[(__bridge NSString *)kCGWindowOwnerPID];
+        if (!pid || ![owners containsObject:pid]) continue;
+        if ([window[(__bridge NSString *)kCGWindowLayer] intValue] != 0 ||
+            [window[(__bridge NSString *)kCGWindowAlpha] doubleValue] <= 0) continue;
+        NSDictionary *bounds = window[(__bridge NSString *)kCGWindowBounds];
+        CGRect rect;
+        if (!bounds || !CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)bounds, &rect) ||
+            rect.size.width < 72 || rect.size.height < 48) continue;
+        fprintf(stderr, "gluon: first visible game window after %.1f ms\n",
+                (NSProcessInfo.processInfo.systemUptime - host_started) * 1000.0);
+        self.gameBundleIdentifier = nil;
+        return;
     }
 }
 
@@ -532,6 +580,14 @@ int main(int argc, char **argv)
     {
         host_started = NSProcessInfo.processInfo.systemUptime;
         GluonLauncherHost *host = [GluonLauncherHost new];
+        const char *appid = getenv("STEAM_COMPAT_APP_ID");
+        if (!appid || !*appid) appid = getenv("SteamAppId");
+        if (appid && *appid && strspn(appid, "0123456789") == strlen(appid))
+        {
+            host.launchDate = [NSDate date];
+            host.gameBundleIdentifier = [@"org.gluon.game." stringByAppendingString:
+                [NSString stringWithUTF8String:appid]];
+        }
         /* Reuse the original argv allocation without copying argument bytes. */
         argv[0] = "/bin/bash";
         host.arguments = argv;

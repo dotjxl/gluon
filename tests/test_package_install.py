@@ -50,6 +50,27 @@ class PackageDeploymentTests(unittest.TestCase):
             package_install.deploy(self.source)
         self.assertEqual((self.home / 'runtime/fixture/bin/wine').read_text(), 'changed existing runtime')
 
+    def test_identical_runtime_keeps_the_active_loader_inode_on_an_upgrade(self):
+        runtime_dir = self.source / "runtime"
+        previous = "gluon-runtime-previous"
+        candidate = "gluon-runtime-candidate"
+        (runtime_dir / "fixture").rename(runtime_dir / previous)
+        (runtime_dir / previous / ".gluon-runtime-build-key").write_text("same")
+        request = {"schema": 1, "name": previous, "version": "0.5-rc.1"}
+        (runtime_dir / "pending.json").write_text(json.dumps(request))
+        package_install.deploy(self.source)
+        (self.home / "runtime/current").symlink_to(previous)
+        loader = self.home / "runtime/current/bin/wine"
+        before = loader.stat().st_ino
+
+        (runtime_dir / previous).rename(runtime_dir / candidate)
+        (runtime_dir / "pending.json").write_text(json.dumps(dict(request, name=candidate, version="0.5-rc.2")))
+        package_install.deploy(self.source)
+        self.assertFalse((self.home / "runtime" / candidate).exists())
+        self.assertEqual(loader.stat().st_ino, before)
+        self.assertEqual(json.loads((self.home / "runtime/pending.json").read_text()),
+                         dict(request, version="0.5-rc.2"))
+
     def test_root_is_refused_before_user_paths_are_created(self):
         with patch.object(package_install.os, 'geteuid', return_value=0):
             with self.assertRaisesRegex(steamplay.SteamPlayError, 'must not run as root'):

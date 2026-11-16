@@ -15,7 +15,7 @@ import subprocess
 import sys
 architectures = ['-arch', 'arm64', '-arch', 'x86_64', '-mmacosx-version-min=11.0',
                  '-Wall', '-Wextra', '-Werror']
-common = [*architectures, '-fobjc-arc', '-framework', 'AppKit']
+common = [*architectures, '-fobjc-arc', '-framework', 'AppKit', '-framework', 'CoreGraphics']
 fixtures = 'build/launcher-host-fixtures/'
 for source, output in [('tools/gluon-launcher-host.m', 'build/launcher-host/gluon-launcher-host'),
                        ('packaging/launcher-host-controller.m', fixtures + 'launcher-host-controller'),
