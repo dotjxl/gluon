@@ -290,6 +290,7 @@ else
     export WINEPREFIX="$compat/pfx-wine"
 fi
 export WINEDEBUG="${WINEDEBUG:-fixme-all,+timestamp}"
+export MVK_CONFIG_LOG_LEVEL="${MVK_CONFIG_LOG_LEVEL:-2}"
 # Mach-semaphore synchronization (msync) avoids most wineserver round trips.
 # Client and server must agree: every Wine command below, including prefix
 # setup and shutdown, inherits it, and an earlier server is waited for first.
@@ -576,14 +577,18 @@ else
         game_command=("$exe" "$@")
     fi
     keep_awake
-    # Each game runs from its own app bundle, started through LaunchServices: macOS
-    # brings it to the front, names it and lets Game Mode recognize it. The bundle's
-    # executable is the runtime's loader, which Gluon's Wine keeps for every process
-    # of the game and starts in GLUON_GAME_CWD. GLUON_APP_BUNDLE=0 starts Wine
-    # directly instead; so do other runtimes and a bundle LaunchServices refuses.
+    # Start the prepared bundle's loader directly. Wine uses the executable's
+    # bundle for its children and brings the real window forward when it is ready.
+    # Keep the LaunchServices route available for games that need it.
     [ -z "$overlay_insert" ] || log "  passing Steam's native overlay libraries to the Wine game host"
     launching=1
-    if [ -n "$bundle" ]; then
+    if [ -n "$bundle" ] && [ "${GLUON_USE_LAUNCHSERVICES:-0}" != 1 ] \
+        && [ -x "$bundle/Contents/MacOS/wine" ]; then
+        log "  starting ${bundle##*/} directly (output in $WINE_LOG)"
+        (unset GLUON_LAUNCHER_HOST
+         GLUON_GAME_CWD="$PWD" GLUON_OVERLAY_INSERT="$overlay_insert" \
+             exec "$bundle/Contents/MacOS/wine" "${game_command[@]}") >> "$WINE_LOG" 2>&1 &
+    elif [ -n "$bundle" ]; then
         # LaunchServices starts the bundle with the user's login environment; pass
         # this session's Wine, Gluon, Steam and graphics settings explicitly.
         launch_environment=(--env "GLUON_GAME_CWD=$PWD")
@@ -613,7 +618,7 @@ else
     wait "$child_pid"
     status=$?
     child_pid=""
-    if [ -n "$bundle" ]; then
+    if [ -n "${game_log:-}" ]; then
         cat "$game_log" "$game_out" >> "$WINE_LOG" 2>/dev/null
         if [ "$status" -ne 0 ] && [ ! -s "$game_log" ] && [ ! -s "$game_out" ] \
             && [ $((SECONDS - bundle_started)) -lt 5 ]; then

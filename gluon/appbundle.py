@@ -1,7 +1,7 @@
 """Give each Steam game its own macOS app bundle.
 
-LaunchServices launches the bundle, so macOS brings the game to the front, names
-it after the game and lets Game Mode recognize it. The bundle's executable is a
+Gluon launches the bundle's executable so macOS can identify and name the game
+and Wine can bring the window forward. The bundle's executable is a
 hard link of the runtime's Wine loader: macOS treats a process as part of a
 bundle only when it runs the bundle's declared executable, and Wine keeps every
 process of the game on that loader. Bundles live under a .noindex folder so

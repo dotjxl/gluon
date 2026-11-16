@@ -29,7 +29,7 @@ class PreloadTests(unittest.TestCase):
                 self.assertTrue(prefix.is_dir())
                 self.assertEqual(prefix.parent, settings)
                 self.assertFalse(any(key.startswith(("DYLD_", "STEAM_")) for key in kwargs["env"]))
-                self.assertEqual(args, [str(runtime / "bin/wineserver"), "-f", "-p2"])
+                self.assertEqual(args, [str(runtime / "bin" / ("wine" if not runs else "wineserver")), "--version"])
                 self.assertLessEqual(kwargs["timeout"], 4)
                 runs.append(prefix)
 
@@ -38,6 +38,6 @@ class PreloadTests(unittest.TestCase):
                 self.assertEqual(runs, [])
                 (settings / "preload-wine").write_text("1\n")
                 preload.warm(home)
-                self.assertEqual(len(runs), 1)
+                self.assertEqual(len(runs), 2)
                 self.assertFalse(runs[0].exists())
                 self.assertEqual(list(game_prefix.iterdir()), [])
