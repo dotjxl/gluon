@@ -183,7 +183,7 @@ with open(output, 'w') as out, open(errors, 'w') as err:
     def test_game_starts_from_its_app_bundle_through_launchservices(self):
         runtime = self.runtime()
         self.install_bundle_helpers(runtime)
-        result, events = self.run_launcher(GLUON_RUNTIME=str(runtime), GLUON_USE_LAUNCHSERVICES="1")
+        result, events = self.run_launcher(GLUON_RUNTIME=str(runtime))
         self.assertEqual(result.returncode, 0, result.stderr)
         opens = [event for event in events if event["role"] == "open"]
         self.assertEqual(len(opens), 1, events)
@@ -201,10 +201,10 @@ with open(output, 'w') as out, open(errors, 'w') as err:
         self.assertIn("fixture output from wine", wine_log)
         self.assertEqual(sorted(p.name for p in (self.home / "logs").glob("wine-123-session.*")), [])
 
-    def test_default_starts_the_named_bundle_loader_without_open(self):
+    def test_direct_mode_starts_the_named_bundle_loader_without_open(self):
         runtime = self.runtime()
         self.install_bundle_helpers(runtime)
-        result, events = self.run_launcher(GLUON_RUNTIME=str(runtime))
+        result, events = self.run_launcher(GLUON_RUNTIME=str(runtime), GLUON_USE_LAUNCHSERVICES="0")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(any(event["role"] == "open" for event in events), events)
         self.assert_launch(events, str(runtime / "lib/wine"))

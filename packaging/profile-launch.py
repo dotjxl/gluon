@@ -106,14 +106,16 @@ fixture_home = probes / 'profile-candidate'
 shim = fixture_home / 'compatibilitytools.d/gluon-proton/run'
 launch_log = fixture_home / 'logs/launch-123.log'
 visible_samples = {'direct': [], 'launchservices': []}
+visible_failures = {'direct': 0, 'launchservices': 0}
 notepad = runtime / 'lib/wine/x86_64-windows/notepad.exe'
 if not notepad.is_file():
     raise RuntimeError('Missing Windows GUI launch fixture')
 for mode in ('launchservices', 'direct', 'direct', 'launchservices'):
+    attempt = len(visible_samples[mode]) + visible_failures[mode]
     offset = launch_log.stat().st_size
     env = dict(base_env, GLUON_HOME=str(fixture_home), GLUON_USE_LAUNCHSERVICES='1' if mode == 'launchservices' else '0')
     started = time.monotonic()
-    with (probes / ('visible-launch-%s-%s.log' % (mode, len(visible_samples[mode])))).open('w') as output:
+    with (probes / f'visible-launch-{mode}-{attempt}.log').open('w') as output:
         process = subprocess.Popen(['/bin/sh', str(shim), 'waitforexitandrun', str(notepad)],
                                    env=env, stdout=output, stderr=subprocess.STDOUT)
         try:
@@ -123,23 +125,28 @@ for mode in ('launchservices', 'direct', 'direct', 'launchservices'):
                 while time.monotonic() < deadline and process.poll() is None:
                     lines = log.read()
                     if re.search(r'first visible game window after [0-9.]+ ms', lines):
-                        visible_samples[mode].append(round(time.monotonic() - started, 4))
+                        seconds = round(time.monotonic() - started, 4)
+                        visible_samples[mode].append(seconds)
+                        print(f'{mode} launch {attempt}: first onscreen window after {seconds:.4f} s', flush=True)
                         break
                     time.sleep(.02)
                 else:
-                    raise RuntimeError(f'No visible window detected for {mode}. See {launch_log}.')
+                    visible_failures[mode] += 1
+                    print(f'{mode} launch {attempt}: no onscreen window detected within 25 s', flush=True)
         finally:
             if process.poll() is None:
                 process.terminate()
                 process.wait(timeout=25)
             subprocess.run([str(runtime / 'bin/wineserver'), '-k'], env=env, timeout=10)
             subprocess.run([str(runtime / 'bin/wineserver'), '-w'], env=env, timeout=10, check=True)
-    (probes / f'visible-first-window-{mode}.log').write_bytes(launch_log.read_bytes()[offset:])
-visible_medians = {name: round(statistics.median(samples), 4) for name, samples in visible_samples.items()}
+    (probes / f'visible-first-window-{mode}-{attempt}.log').write_bytes(launch_log.read_bytes()[offset:])
+visible_medians = {name: round(statistics.median(samples), 4) for name, samples in visible_samples.items() if samples}
 (probes / 'visible-launch-profile.json').write_text(json.dumps({
-    'samples': visible_samples, 'medians': visible_medians,
+    'samples': visible_samples, 'medians': visible_medians, 'failures': visible_failures,
 }, indent=2))
 print('First visible Notepad window from compatibility-tool entry:', visible_medians)
+if visible_failures['launchservices']:
+    raise RuntimeError('The default launch route did not consistently show a window; see visible-first-window logs')
 scan_code = None
 with (probes / 'wine-memory-target.log').open('w') as log:
     target = subprocess.Popen([str(runtime / 'bin/wine'), 'notepad.exe'],
