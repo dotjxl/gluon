@@ -17,5 +17,7 @@ bool gluon_settings_mac32_effective(void);
 // A reserved appid-zero command is consumed before the Steam mapping writer.
 // 0: ordinary mapping, 1: preference saved, -1: preference could not be saved.
 int gluon_settings_command(uint32_t appid, const char *name);
+// Reserved read-only launch query. 0: pass through, 1: bit set, -1: bit clear.
+int gluon_launch_query(uint32_t appid, const char *name);
 bool gluon_settings_auto_app(uint32_t appid);
 #endif

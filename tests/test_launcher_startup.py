@@ -33,6 +33,7 @@ event = {'role': pathlib.Path(sys.argv[0]).name,
          'executable': sys.argv[0],
          'args': sys.argv[1:], 'dllpath': os.environ.get('WINEDLLPATH'),
          'focus': os.environ.get('GLUON_FOCUS'), 'gl': os.environ.get('GLUON_GL_COMPAT_AS_CORE'),
+         'wined3d': os.environ.get('WINE_D3D_CONFIG'), 'dxvk': os.environ.get('DXVK_LOG_LEVEL'),
          'dyld': os.environ.get('DYLD_INSERT_LIBRARIES'), 'game_cwd': os.environ.get('GLUON_GAME_CWD'),
          'prefix': os.environ.get('WINEPREFIX'), 'app': os.environ.get('SteamAppId'),
          'host': os.environ.get('GLUON_HOST_PID'),
@@ -295,6 +296,26 @@ with open(output, 'w') as out, open(errors, 'w') as err:
                             and str(self.game) in event["args"])
                 self.assertEqual(game["args"].count("--classic-window"), expected)
                 self.assertIn("--in-process-gpu", game["args"])
+
+    def test_primordialis_profile_requires_the_patched_runtime_and_honors_an_override(self):
+        self.game = self.game.rename(self.game.with_name("primordialis.exe"))
+        runtime = self.runtime()
+        self.install_bundle_helpers(runtime)
+        notices = runtime / "licenses/gluon-wine-patches/APPLIED.txt"
+        for supported, options, expected in ((False, (), "0"), (True, (), "1"),
+                                               (True, ("GLUON_GL_COMPAT_AS_CORE=0",), "0")):
+            with self.subTest(supported=supported, options=options):
+                notices.write_text("wine-gl-compat-as-core\n" if supported else "other-patch\n")
+                self.trace.unlink(missing_ok=True)
+                result, events = self.run_launcher(*options, "WINE_D3D_CONFIG=renderer=gl", "DXVK_LOG_LEVEL=warn",
+                                                  verb="waitforexitandrun", STEAM_COMPAT_APP_ID="3011360",
+                                                  GLUON_RUNTIME=str(runtime))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                game = next(event for event in events if event["role"] == "wine"
+                            and str(self.game) in event["args"])
+                self.assertEqual(game["gl"], expected)
+                self.assertEqual(game["args"], [str(self.game)])
+                self.assertEqual((game["wined3d"], game["dxvk"]), ("renderer=gl", "warn"))
 
     def test_proton_does_not_receive_plain_wine_chromium_overlay_marker(self):
         runtime = self.runtime(proton=True)

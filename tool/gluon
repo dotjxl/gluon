@@ -136,7 +136,7 @@ done
 # "%command% GLUON_FOCUS=0 WINEMSYNC=0". Recognized settings after the program
 # are applied and removed before the game sees its arguments, as is a literal
 # %command% that Steam did not replace. Only these names are accepted.
-setting_name='^(GLUON_[A-Z0-9_]+|WINEMSYNC|WINEDEBUG|WINEDLLOVERRIDES|ROSETTA_ADVERTISE_AVX|DXMT_[A-Z0-9_]+|MVK_CONFIG_[A-Z0-9_]+|PROTON_[A-Z0-9_]+)='
+setting_name='^(GLUON_[A-Z0-9_]+|WINEMSYNC|WINEDEBUG|WINEDLLOVERRIDES|WINE_D3D_CONFIG|ROSETTA_ADVERTISE_AVX|DXMT_[A-Z0-9_]+|DXVK_[A-Z0-9_]+|MVK_CONFIG_[A-Z0-9_]+|PROTON_[A-Z0-9_]+)='
 game_arguments=()
 position=0
 for argument in "$@"; do
@@ -161,6 +161,13 @@ if [ "${GLUON_LAUNCHER_HOST:-}" = 1 ]; then
 else
     unset GLUON_HOST_PID
 fi
+
+# The Steam library reads these bounded markers from the existing launch log.
+launch_stage() {
+    if [ -n "$game_session" ] && [ "${GLUON_LAUNCHER_HOST:-}" = 1 ]; then
+        printf 'gluon: launch stage %s %s\n' "$PPID" "$1" >> "$LOG"
+    fi
+}
 
 # Rosetta settings every Windows runtime here benefits from (both are documented
 # switches; set a variable to 0 in the per-game settings to turn it off).
@@ -296,8 +303,19 @@ export MVK_CONFIG_LOG_LEVEL="${MVK_CONFIG_LOG_LEVEL:-2}"
 # setup and shutdown, inherits it, and an earlier server is waited for first.
 # WINEMSYNC=0 in a game's settings turns it off; other runtimes ignore it.
 [ "$kind" != wine ] || export WINEMSYNC="${WINEMSYNC:-1}"
-# Opt in per game to mapping OpenGL compatibility requests onto Apple's core
-# profile. Removed compatibility features remain unavailable.
+# The verified Primordialis route needs Apple's core profile to start modern
+# OpenGL. Only select it for Gluon's runtime and let a saved override win.
+if [ -n "$game_session" ] && [ "$kind" = wine ] && [ -z "${GLUON_GL_COMPAT_AS_CORE+x}" ] \
+    && [ -z "$GLUON_NO_AUTO_ARGS" ]; then
+    case "$appid:${exe##*/}" in
+        3011360:primordialis.exe|3011360:primordialis_avx.exe|3011360:primordialis_sse3.exe)
+            if grep -qx wine-gl-compat-as-core "$runtime/licenses/gluon-wine-patches/APPLIED.txt" 2>/dev/null; then
+                GLUON_GL_COMPAT_AS_CORE=1
+                log "  Primordialis: using the OpenGL core profile"
+            fi
+            ;;
+    esac
+fi
 export GLUON_GL_COMPAT_AS_CORE="${GLUON_GL_COMPAT_AS_CORE:-0}"
 if [ -d "$runtime/lib/gstreamer-1.0" ]; then
     export GST_PLUGIN_SYSTEM_PATH_1_0="$runtime/lib/gstreamer-1.0"
@@ -400,6 +418,7 @@ patches="$runtime/licenses/gluon-wine-patches/APPLIED.txt"
 if [ "${GLUON_NATIVE_CLOUD:-}" = 1 ] || { [ -n "$game_session" ] && [ "$kind" = wine ] \
     && { [ -n "$STEAM_DYLD_INSERT_LIBRARIES" ] || { [ -n "$overlay_scoped" ] \
     && [ "${GLUON_APP_BUNDLE:-1}" != 0 ]; }; }; }; then
+    launch_stage 2
     fallback_name="${install_dir:-$exe}"
     fallback_name="${fallback_name##*/}"
     launch_setup="$(PYTHONPATH="$helper_lib" PYTHONDONTWRITEBYTECODE=1 /usr/bin/arch -arm64 /usr/bin/python3 \
@@ -546,6 +565,7 @@ if [ "$kind" = proton ]; then
         export WINEDLLOVERRIDES="$WINEDLLOVERRIDES;mscoree,mshtml="
     fi
     log "  starting the tool (output in $WINE_LOG)"
+    launch_stage 5
     keep_awake
     run_wait "$runtime/proton" "$verb" "$exe" "$@"
     status=$?
@@ -553,6 +573,7 @@ else
     if [ ! -f "$WINEPREFIX/system.reg" ]; then
         # First run for this game: create the prefix up front.
         log "  creating prefix"
+        launch_stage 3
         setup_overrides="$WINEDLLOVERRIDES"
         if [ ! -d "$runtime/share/wine/mono" ]; then
             # No bundled add-ons: without this, setup stops on a download prompt.
@@ -563,6 +584,7 @@ else
         run_wait "$wineserver" -w || fail "Wine prefix setup did not finish (see $WINE_LOG)"
     elif [ "$verb" = waitforexitandrun ]; then
         log "  waiting for previous prefix session"
+        launch_stage 4
         run_wait "$wineserver" -w || fail "Could not wait for the previous session (see $WINE_LOG)"
         log "  previous prefix session is idle"
     fi
@@ -598,6 +620,7 @@ else
     # Start through LaunchServices so macOS registers the game as an app. The
     # direct route uses the same bundle and is available for launch profiling.
     [ -z "$overlay_insert" ] || log "  passing Steam's native overlay libraries to the Wine game host"
+    launch_stage 5
     launching=1
     if [ -n "$bundle" ] && [ "${GLUON_USE_LAUNCHSERVICES:-1}" = 0 ] \
         && [ -x "$bundle/Contents/MacOS/wine" ]; then

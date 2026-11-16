@@ -15,7 +15,10 @@ gluon_home="${GLUON_HOME:-$HOME/Library/Application Support/Gluon}"
 export STEAM_ROOT="${GLUON_STEAM_ROOT:-${STEAM_ROOT:-$HOME/Library/Application Support/Steam}}"
 launcher="$gluon_home/bin/gluon"
 [ -x "$launcher" ] || { echo "gluon: reinstall Gluon; launcher missing: $launcher" >&2; exit 1; }
-tool_directory="$(cd "$(dirname "$0")" && pwd -P)" || exit 1
+tool_parent="${0%/*}"
+[ "$tool_parent" != "$0" ] || tool_parent=.
+[ -n "$tool_parent" ] || tool_parent=/
+tool_directory="$(CDPATH= cd -- "$tool_parent" && pwd -P)" || exit 1
 case "${tool_directory##*/}" in
   gluon)
     PYTHONPATH="$gluon_home/lib" PYTHONDONTWRITEBYTECODE=1 /usr/bin/arch -arm64 /usr/bin/python3 \

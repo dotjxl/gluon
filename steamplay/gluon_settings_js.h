@@ -52,5 +52,14 @@
     "const key=e.key===\"gluon.preload.changed\"?\"preload\":e.key===\"gluon.updates.changed\"?\"updates\":null;if(!key||!e.newValue)return;const g=globalThis.__GLUON_SETTINGS__;" \
     "const enabled=e.newValue.startsWith(\"1:\");g[key===\"preload\"?\"preloadWine\":\"automaticUpdates\"]=enabled;const t=globalThis.document?.querySelector('input[name=gluon_'+key+']');if(t)t.checked=enabled})}\n" \
     "globalThis.__GLUON_SETTINGS__.macOnlyLabel=(J,id)=>globalThis.__NOTPROTON_NATIVE_PLATFORM__?.mac32Only?.has(id)?" \
-    "J(\"p\",{style:{color:\"#aab5bf\",fontSize:13,lineHeight:1.4,margin:\"10px 24px\"},children:\"32-bit Mac only · Requires a legacy Mac runtime\"}):null;\n"
+    "J(\"p\",{style:{color:\"#aab5bf\",fontSize:13,lineHeight:1.4,margin:\"10px 24px\"},children:\"32-bit Mac only · Requires a legacy Mac runtime\"}):null;\n" \
+    "if(!globalThis.__GLUON_SETTINGS__.launchStatus)globalThis.__GLUON_SETTINGS__.launchStatus=(J,id)=>{if(!Number.isInteger(id)||id<=0||id>4294967295)return null;" \
+    "const messages=[\"\",\"Preparing the runtime\",\"Checking game files and Steam Cloud\",\"Setting up Windows files\",\"Waiting for the previous session\",\"Opening the game\"];" \
+    "let element,timer,generation=0;const render=node=>{clearTimeout(timer);element=node;const ticket=++generation;if(!node)return;" \
+    "const refresh=async()=>{let text=\"\";try{const g=globalThis.__GLUON_SETTINGS__;" \
+    "if(g.launchQuery&&document.visibilityState!==\"hidden\"){const bit=k=>g.launchQuery(id,\"__gluon_launch_v1_bit_\"+k);" \
+    "if(await bit(0)){const values=await Promise.all([bit(1),bit(2),bit(4)]);const phase=values.reduce((n,v,i)=>n+(v===true?1<<i:0),0);if(messages[phase])text=\"Gluon · \"+messages[phase];}}}catch{}" \
+    "if(ticket!==generation||node!==element||!node.isConnected)return;if(node.textContent!==text){node.textContent=text;node.hidden=!text;}" \
+    "timer=setTimeout(refresh,text?450:1100);};timer=setTimeout(refresh,0);};" \
+    "return J(\"p\",{ref:render,role:\"status\",\"aria-live\":\"polite\",hidden:true,style:{color:\"#aab5bf\",fontSize:13,margin:\"6px 24px\"}});};\n"
 #endif

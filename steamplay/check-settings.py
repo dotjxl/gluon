@@ -288,7 +288,7 @@ with tempfile.TemporaryDirectory() as temporary:
         '-fno-sanitize-recover=all','-I'+str(source/'dylib/feats'),str(root/'steamplay/check-settings.c'),
         str(source/'dylib/feats/gluon_settings.c'),str(source/'dylib/util/file.c'),'-o',str(executable)],check=True)
     env = dict(os.environ, GLUON_HOME=str(home))
-    for operation in ('on','off','read-off'):
+    for operation in ('on','off','read-off','launch'):
         subprocess.run([str(executable),operation],env=env,check=True)
     assert (home/'steamplay/auto-mac32').read_text() == '0\n'
     env['GLUON_HOME'] = str(base/'does-not-exist')
