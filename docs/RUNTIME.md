@@ -15,11 +15,10 @@ ignore termination cannot hold that shell indefinitely. Another game's prefix
 is never stopped. Install-script helpers do not acquire a game host, game identity,
 Steam bridge, overlay, focus activation or keep-awake process.
 
-Games start from the loader in their named app bundle with their original working
-directory and argument boundaries. The Wine loader patch keeps child processes in
-the bundle. The host and Wine cooperate on focus, including Big Picture's Space.
-Cmd-Q requests cleanup of that session. Set `GLUON_USE_LAUNCHSERVICES=1` to use
-macOS LaunchServices to open the bundle.
+LaunchServices opens the loader in each game's named app bundle. The launcher
+preserves the working directory and argument boundaries, and the Wine loader
+keeps child processes in the same bundle. The host and Wine cooperate on focus,
+including Big Picture's Space. Cmd-Q requests cleanup of that session.
 
 Overlay insertion is limited to game images; Wine's server and built-in Windows
 helpers do not load it. Plain Wine uses msync by default. Startup logging reuses a
@@ -39,7 +38,7 @@ Native install helpers retain their original argument strings.
 | Setting | Default | Purpose |
 |---|---|---|
 | `GLUON_APP_BUNDLE` | `1` | Named game bundle |
-| `GLUON_USE_LAUNCHSERVICES` | `0` | Open the game bundle with macOS LaunchServices |
+| `GLUON_USE_LAUNCHSERVICES` | `1` | Use LaunchServices to open the game bundle. Set to `0` to profile a direct launch. |
 | `GLUON_FOCUS` | `1` | Bring the game's window/Space forward |
 | `GLUON_OVERLAY` | `1` | Steam-supplied native overlay |
 | `GLUON_STEAM_BRIDGE` | `1` | Existing optional Steam API bridge |

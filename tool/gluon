@@ -577,12 +577,11 @@ else
         game_command=("$exe" "$@")
     fi
     keep_awake
-    # Start the prepared bundle's loader directly. Wine uses the executable's
-    # bundle for its children and brings the real window forward when it is ready.
-    # Keep the LaunchServices route available for games that need it.
+    # Start through LaunchServices so macOS registers the game as an app. The
+    # direct route uses the same bundle and is available for launch profiling.
     [ -z "$overlay_insert" ] || log "  passing Steam's native overlay libraries to the Wine game host"
     launching=1
-    if [ -n "$bundle" ] && [ "${GLUON_USE_LAUNCHSERVICES:-0}" != 1 ] \
+    if [ -n "$bundle" ] && [ "${GLUON_USE_LAUNCHSERVICES:-1}" = 0 ] \
         && [ -x "$bundle/Contents/MacOS/wine" ]; then
         log "  starting ${bundle##*/} directly (output in $WINE_LOG)"
         (unset GLUON_LAUNCHER_HOST
