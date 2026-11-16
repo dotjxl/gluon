@@ -1,23 +1,35 @@
 # Graphics and compatibility
 
-| Game API | Gluon runtime path | Limit |
+A game's graphics API and the backend it actually loads determine which settings apply. Use the game's own renderer information and Gluon's Wine log for evidence. [Find the relevant log](Troubleshooting.md#find-the-relevant-log).
+
+| Game API | Bundled runtime path | What to verify |
 |---|---|---|
-| Direct3D 9 | DXVK through MoltenVK | Check rendering in the game, since device creation only covers the start of the graphics stack. |
-| Direct3D 10/11 | DXMT through Metal | Support varies with the game and its rendering features. |
-| Vulkan | Wine Vulkan loader through MoltenVK | A device or extension probe does not establish complete rendering support. |
-| OpenGL | Wine's macOS driver and Apple's OpenGL | Compatibility features removed from Apple's core profile remain unavailable. |
+| Direct3D 9 | DXVK through MoltenVK | Check in-game rendering. The automated Direct3D 9 probe covers a small render-and-readback case. |
+| Direct3D 10/11 | DXMT through Metal | Support varies with the game and the features it uses. |
+| Vulkan | Wine Vulkan loader through MoltenVK | Portability and extension support depend on the runtime and device. |
+| OpenGL | Wine's macOS driver and Apple's OpenGL | Games that require features removed from Apple's core profile can still fail. |
 
-Steam Input, launchers, audio, and Steam overlay behavior vary by game. Windows kernel drivers and kernel anti-cheat are outside this compatibility path.
+WineD3D is a separate backend. A renderer selection in `WINE_D3D_CONFIG` applies when the game loads WineD3D. Windows kernel drivers and kernel anti-cheat are outside Gluon's compatibility path. [Per-game settings](Settings-and-Launch-Options.md#change-one-game) · [Graphics verification](../graphics-cloud-verification.md).
 
-## Per-game settings
+## Fullscreen, overlay, audio, and input
 
-Open **Properties → General → Launch Options**. Keep `%command%` first, then add an option for the affected game. Remove the option to restore the default.
+Game presentation, Steam overlay, and controller support vary by title. If a game starts with audio and the window fails to appear, try windowed mode and compare. For an overlay-specific problem, test once with `%command% GLUON_OVERLAY=0` and record the result. For a media or input problem, include the output device or controller type and the Steam Input setting in your report. [Fullscreen troubleshooting](Troubleshooting.md#steam-says-running-but-there-is-no-window) · [Overlay evidence](../graphics-steam-overlay.md) · [Media and input dependencies](../graphics-runtime-media.md).
 
-| Option | Use |
+## Title-specific behavior
+
+| Game | Gluon behavior |
 |---|---|
-| `%command% GLUON_GL_COMPAT_AS_CORE=1` | Try Apple's core OpenGL profile for a game that requests an older compatibility profile. Gluon automatically selects this route for Primordialis on the bundled runtime when that patch is available. |
-| `%command% WINE_D3D_CONFIG=renderer=gl` | Ask WineD3D to use OpenGL for a game that loads WineD3D. `renderer=vulkan` selects its Vulkan renderer. |
-| `%command% GLUON_OVERLAY=0` | Isolate a game or window problem that appears when the Steam overlay loads. |
-| `%command% GLUON_HAPPY_WHEELS_CLASSIC_WINDOW=0` | Restore Happy Wheels' default native presenter. Gluon uses the game's classic window by default to avoid its shared-texture timeout. |
+| Happy Wheels | Gluon selects the game's classic window to avoid the native presenter's shared-texture timeout. `%command% GLUON_HAPPY_WHEELS_CLASSIC_WINDOW=0` restores the game's default presenter. |
+| Primordialis | Gluon selects the OpenGL core profile when its bundled compatibility patch is present. `%command% GLUON_GL_COMPAT_AS_CORE=0` overrides that choice. |
 
-DXVK, DXMT, WineD3D, and MoltenVK each read their own settings. See the [runtime settings reference](../RUNTIME.md#settings) and [graphics verification results](../graphics-cloud-verification.md) for details.
+Report the version and settings used when confirming a game. [Testing and compatibility reports](Testing-and-Compatibility-Reports.md).
+
+## Legacy Mac games
+
+With **Use Gluon for 32-bit Mac games** enabled, eligible titles with a Windows launch can use their Windows build. Games marked **32-bit Mac only** need a legacy Mac runtime. For a separately installed mac32 runner, start with the check command for an installed app.
+
+```sh
+"$HOME/Library/Application Support/Gluon/bin/gluonctl" legacy-mac check "/path/to/Game.app"
+```
+
+The runner supports a subset of legacy apps. [Legacy Mac behavior and runner details](../STEAM-SETTINGS.md) · [CLI reference](CLI-Reference.md#legacy-mac-games).
