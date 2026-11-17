@@ -53,13 +53,21 @@
     "const enabled=e.newValue.startsWith(\"1:\");g[key===\"preload\"?\"preloadWine\":\"automaticUpdates\"]=enabled;const t=globalThis.document?.querySelector('input[name=gluon_'+key+']');if(t)t.checked=enabled})}\n" \
     "globalThis.__GLUON_SETTINGS__.macOnlyLabel=(J,id)=>globalThis.__NOTPROTON_NATIVE_PLATFORM__?.mac32Only?.has(id)?" \
     "J(\"p\",{style:{color:\"#aab5bf\",fontSize:13,lineHeight:1.4,margin:\"10px 24px\"},children:\"32-bit Mac only · Requires a legacy Mac runtime\"}):null;\n" \
-    "if(!globalThis.__GLUON_SETTINGS__.launchStatus)globalThis.__GLUON_SETTINGS__.launchStatus=(J,id)=>{if(!Number.isInteger(id)||id<=0||id>4294967295)return null;" \
+    "if(!globalThis.__GLUON_SETTINGS__.playBarDetail){const panels=new WeakMap();" \
     "const messages=[\"\",\"Preparing the runtime\",\"Checking game files and Steam Cloud\",\"Setting up Windows files\",\"Waiting for the previous session\",\"Opening the game\"];" \
-    "let element,timer,generation=0;const render=node=>{clearTimeout(timer);element=node;const ticket=++generation;if(!node)return;" \
-    "const refresh=async()=>{let text=\"\";try{const g=globalThis.__GLUON_SETTINGS__;" \
-    "if(g.launchQuery&&document.visibilityState!==\"hidden\"){const bit=k=>g.launchQuery(id,\"__gluon_launch_v1_bit_\"+k);" \
-    "if(await bit(0)){const values=await Promise.all([bit(1),bit(2),bit(4)]);const phase=values.reduce((n,v,i)=>n+(v===true?1<<i:0),0);if(messages[phase])text=\"Gluon · \"+messages[phase];}}}catch{}" \
-    "if(ticket!==generation||node!==element||!node.isConnected)return;if(node.textContent!==text){node.textContent=text;node.hidden=!text;}" \
-    "timer=setTimeout(refresh,text?450:1100);};timer=setTimeout(refresh,0);};" \
-    "return J(\"p\",{ref:render,role:\"status\",\"aria-live\":\"polite\",hidden:true,style:{color:\"#aab5bf\",fontSize:13,margin:\"6px 24px\"}});};\n"
+    "globalThis.__GLUON_SETTINGS__.playBarDetail=panel=>{const stock=panel.GetDetailsText(),app=panel.props.overview,id=app.appid," \
+    "action=panel.state.unGameActionID,query=globalThis.__GLUON_SETTINGS__.launchQuery;" \
+    "if(panel.props.strGameActionDetailsOverride||app.BIsSelectedClientLocal?.()===false||!query||!Number.isInteger(id)||id<=0||id>4294967295)return stock;" \
+    "let state=panels.get(panel);" \
+    "if(state?.id!==id||action&&state.action!==action){panels.delete(panel);state=undefined;}" \
+    "if(!state&&action){state={id,action,text:\"\",deadline:performance.now()+125000,grace:0};panels.set(panel,state);" \
+    "const current=state,live=()=>!panel.m_bMounted&&panel.props.overview.appid===id&&panels.get(panel)===current;" \
+    "const refresh=async()=>{if(!live())return;let text=\"\";const now=performance.now();" \
+    "if(now<current.deadline&&document.visibilityState!==\"hidden\"){try{const bit=k=>query(id,\"__gluon_launch_v1_bit_\"+k);" \
+    "if(await bit(0)&&live()){const values=await Promise.all([bit(1),bit(2),bit(4)]);const phase=values.reduce((n,v,i)=>n+(v===true?1<<i:0),0);" \
+    "if(messages[phase])text=\"Gluon · \"+messages[phase];}}catch{}}" \
+    "if(!live())return;if(current.text!==text){current.text=text;panel.forceUpdate();}" \
+    "if(panel.state.unGameActionID===action||text)current.grace=0;else if(!current.grace)current.grace=now+2000;" \
+    "if(now<current.deadline&&(!current.grace||now<current.grace))setTimeout(refresh,350);};setTimeout(refresh,0);}" \
+    "return state?.text||stock;};}\n"
 #endif

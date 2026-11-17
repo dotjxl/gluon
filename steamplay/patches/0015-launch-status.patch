@@ -24,32 +24,16 @@ Show the bounded launcher phase next to the Steam play controls.
          if (preference > 0) np_compatsvc_state_changed();
 --- a/dylib/feats/webpatch.c
 +++ b/dylib/feats/webpatch.c
-@@ -380,8 +380,9 @@
-       GLUON_INVALID_OS_GETTER, 1, 0 },
-     // Reminder banner for 32 bit Mac games
-     { NP_C1 ".is_invalid_os_type&&(0," NP_C2 ".jsx)(" NP_C3 ",{})",
-+      "(0," NP_C2 ".jsxs)(" NP_C2 ".Fragment,{children:[globalThis.__GLUON_SETTINGS__.launchStatus(" NP_C2 ".jsx," NP_C1 ".appid),"
-       "(globalThis.__GLUON_SETTINGS__.macOnlyLabel(" NP_C2 ".jsx," NP_C1 ".appid)"
--      "||(Boolean(" NP_C1 ".is_invalid_os_type)&&(0," NP_C2 ".jsx)(" NP_C3 ",{})))", 1, 0 },
-+      "||(Boolean(" NP_C1 ".is_invalid_os_type)&&(0," NP_C2 ".jsx)(" NP_C3 ",{})))]})", 1, 0 },
-     { "(0," NP_C1 ".we)(\"#GameList_Entry_Invalid_OSType2\")",
-       NP_COMPAT_HINT, 1, 0 },
- };
-@@ -419,8 +420,9 @@
-       GLUON_INVALID_OS_GETTER, 1, 0 },
-     // Reminder banner for 32 bit Mac games
-     { NP_C1 ".is_invalid_os_type&&(0," NP_C2 ".jsx)(" NP_C3 ",{})",
-+      "(0," NP_C2 ".jsxs)(" NP_C2 ".Fragment,{children:[globalThis.__GLUON_SETTINGS__.launchStatus(" NP_C2 ".jsx," NP_C1 ".appid),"
-       "(globalThis.__GLUON_SETTINGS__.macOnlyLabel(" NP_C2 ".jsx," NP_C1 ".appid)"
--      "||(Boolean(" NP_C1 ".is_invalid_os_type)&&(0," NP_C2 ".jsx)(" NP_C3 ",{})))", 1, 0 },
-+      "||(Boolean(" NP_C1 ".is_invalid_os_type)&&(0," NP_C2 ".jsx)(" NP_C3 ",{})))]})", 1, 0 },
-     { "(0," NP_C1 ".we)(\"#GameList_Entry_Invalid_OSType2\")",
-       NP_COMPAT_HINT, 1, 0 },
- };
-@@ -438,6 +440,11 @@
+@@ -438,6 +438,17 @@
      NP_MAC_64(APP) ";"
  
  static const np_gate_t g_fixes[] = {
++    // Use Steam's secondary status text in the play bar and leave its markup intact.
++    { "render(){const " NP_C1 "=this.GetStatus()," NP_C2 "=this.GetDetailsText()," NP_C3 "=this.GetProgressBarPct();",
++      "render(){const " NP_C1 "=this.GetStatus()," NP_C2
++      "=globalThis.__GLUON_SETTINGS__?.playBarDetail?.(this)??this.GetDetailsText()," NP_C3
++      "=this.GetProgressBarPct();", 1, 1 },
++
 +    // Capture the library's own transport when the CompatManager module loads.
 +    { "{ePrivilege:1,eClientExecutionSite:2})}" NP_C1 ".SpecifyCompatTool=" NP_C2 ";",
 +      "{ePrivilege:1,eClientExecutionSite:2})}" NP_C1 ".SpecifyCompatTool=(" NP_C2 ");"

@@ -14,7 +14,7 @@ Use Steam on an Apple silicon Mac with Rosetta available. Download the `.pkg` an
 
 Install or play a Windows game from your library. For a particular game, use **Properties → Compatibility** to choose Gluon when Steam offers it.
 
-While a game opens, the Steam library can show Gluon's current launch stage next to the Play controls. **Steam → Settings → Gluon** controls Windows routing for eligible legacy Mac games, Wine preload, and automatic updates. [See the settings guide](docs/STEAM-SETTINGS.md).
+While a game opens, Steam can show Gluon's current launch stage in the status area to the right of **Play**. **Steam → Settings → Gluon** controls Windows routing for eligible legacy Mac games, Wine preload, and automatic updates. [See the settings guide](docs/STEAM-SETTINGS.md).
 
 ## Compatibility
 
