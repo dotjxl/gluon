@@ -15,6 +15,11 @@ on:
         description: Reuse a completed Build runtime whose compiled inputs match this checkout
         required: false
         type: string
+      refresh_steam_helper:
+        description: Rebuild only the Steam helper in a verified completed runtime
+        required: false
+        type: boolean
+        default: false
   push:
     tags: ["v*"]
 
@@ -42,6 +47,10 @@ jobs:
         run: |
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then v="${GITHUB_REF_NAME#v}"; else v="$GLUON_REQUESTED_VERSION"; fi
           [[ "$v" =~ ^[0-9][A-Za-z0-9_.-]{0,63}$ ]] || { echo "Invalid package version" >&2; exit 1; }
+          if ${{ inputs.refresh_steam_helper == true && inputs.recheck_run_id == '' }}; then
+            echo "Refreshing the Steam helper requires a completed runtime run ID" >&2
+            exit 1
+          fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Rosetta 2
@@ -62,12 +71,16 @@ jobs:
           key: downloads-${{ hashFiles('packaging/build-runtime.sh') }}
 
       - name: Steam bridge input
+        if: inputs.recheck_run_id == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p build/inputs
-          gh release download runtime-inputs-1 -R "$GITHUB_REPOSITORY" -p 'steam-bridge-*.tar.gz*' -D build/inputs || echo "no Steam bridge input published"
-          if ls build/inputs/*.sha256 >/dev/null 2>&1; then (cd build/inputs && shasum -a 256 -c ./*.sha256); fi
+          if ! gh release download runtime-inputs-1 -R "$GITHUB_REPOSITORY" -p 'steam-bridge-*.tar.gz*' -D build/inputs; then
+            bash packaging/fetch-steam-bridge.sh build/inputs
+          fi
+          (cd build/inputs && shasum -a 256 -c ./*.sha256)
+          test -n "$(find build/inputs -name 'steam-bridge-*.tar.gz' -type f -print)"
 
       - name: Build Steam Play integration
         run: steamplay/build.sh
@@ -82,6 +95,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GLUON_ORIGINAL_RUN_ID: ${{ inputs.recheck_run_id }}
+          GLUON_REFRESH_STEAM_HELPER: ${{ inputs.refresh_steam_helper }}
         run: |
           case "$GLUON_ORIGINAL_RUN_ID" in ''|*[!0-9]*) echo "Expected a numeric Build run ID" >&2; exit 1 ;; esac
           mkdir -p build/recheck-input
@@ -135,11 +149,65 @@ jobs:
           expected_key="$(for helper in build-runtime.sh build-tls.sh build-media.sh build-addons.sh relocate-media.py extract-addon-notices.py build-steam-helper.sh patches/steam-helper-resource-ownership.patch; do
             printf '%s %s\n' "$helper" "$(shasum -a 256 "packaging/$helper" | cut -d' ' -f1)"
           done | shasum -a 256 | cut -d' ' -f1)"
-          test "$(cat build/gluon-wine/.gluon-runtime-build-key)" = "$expected_key"
+          if [ "$GLUON_REFRESH_STEAM_HELPER" = true ]; then
+            original_commit="$(python3 -c 'import json; print(json.load(open("build/original-run.json"))["head_sha"])')"
+            git fetch --depth=1 origin "$original_commit"
+            python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          import subprocess
+
+          original = json.loads(Path("build/original-run.json").read_text())["head_sha"]
+          helpers = ("build-runtime.sh", "build-tls.sh", "build-media.sh", "build-addons.sh",
+                     "relocate-media.py", "extract-addon-notices.py", "build-steam-helper.sh",
+                     "patches/steam-helper-resource-ownership.patch")
+          rebuild = {"build-steam-helper.sh", "patches/steam-helper-resource-ownership.patch"}
+          lines = []
+          for helper in helpers:
+              path = "packaging/" + helper
+              source = subprocess.check_output(["git", "show", original + ":" + path])
+              if helper not in rebuild and Path(path).read_bytes() != source:
+                  raise SystemExit("A complete runtime rebuild is required for " + path)
+              lines.append(helper + " " + hashlib.sha256(source).hexdigest() + "\n")
+          expected = hashlib.sha256("".join(lines).encode()).hexdigest()
+          if Path("build/gluon-wine/.gluon-runtime-build-key").read_text().strip() != expected:
+              raise SystemExit("The completed runtime does not match its original build inputs")
+          PY
+          else
+            test "$(cat build/gluon-wine/.gluon-runtime-build-key)" = "$expected_key"
+          fi
           test -x build/gluon-wine/bin/wine
           test -x build/gluon-wine/bin/wineserver
           test -x build/graphics-probes/opengl-native
           test -x build/graphics-probes/vulkan-native
+
+      - name: Rebuild Steam helper from the verified runtime SDK
+        if: inputs.refresh_steam_helper == true
+        run: |
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          import subprocess
+
+          source = Path("packaging/build-runtime.sh").read_text()
+          url, = re.findall(r'^LLVM_MINGW_URL="([^"]+)"$', source, re.M)
+          digest, = re.findall(r'^LLVM_MINGW_SHA="([0-9a-f]{64})"$', source, re.M)
+          archive = Path("build/downloads/llvm-mingw.tar.xz")
+          archive.parent.mkdir(parents=True, exist_ok=True)
+          import hashlib
+          if not archive.is_file() or hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
+              subprocess.run(["curl", "-fL", "--connect-timeout", "15", "--max-time", "300", "--retry", "2",
+                              url, "-o", str(archive)], check=True)
+          if hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
+              raise SystemExit("The pinned Steam helper compiler checksum did not match")
+          Path("build/llvm-mingw").mkdir(exist_ok=True)
+          subprocess.run(["tar", "-xJf", str(archive), "-C", "build/llvm-mingw", "--strip-components", "1"], check=True)
+          PY
+          packaging/build-steam-helper.sh --packaged
+          for helper in build-runtime.sh build-tls.sh build-media.sh build-addons.sh relocate-media.py extract-addon-notices.py build-steam-helper.sh patches/steam-helper-resource-ownership.patch; do
+            printf '%s %s\n' "$helper" "$(shasum -a 256 "packaging/$helper" | cut -d' ' -f1)"
+          done | shasum -a 256 | cut -d' ' -f1 > build/gluon-wine/.gluon-runtime-build-key
 
       - name: Build runtime
         if: inputs.recheck_run_id == ''
@@ -165,7 +233,7 @@ jobs:
           done
 
       - name: Preserve completed runtime and compiled probes
-        if: inputs.recheck_run_id == ''
+        if: inputs.recheck_run_id == '' || inputs.refresh_steam_helper == true
         run: |
           shasum -a 256 packaging/check-opengl.c packaging/check-wgl.c \
             packaging/probes/vulkan.c packaging/probes/runtime-dependencies.c \
@@ -175,7 +243,7 @@ jobs:
           (cd build && shasum -a 256 completed-runtime-input.tar.gz > completed-runtime-input.tar.gz.sha256)
 
       - name: Upload completed runtime for bounded rechecks
-        if: inputs.recheck_run_id == ''
+        if: inputs.recheck_run_id == '' || inputs.refresh_steam_helper == true
         uses: actions/upload-artifact@v4
         with:
           name: completed-runtime-input
