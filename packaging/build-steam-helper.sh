@@ -35,19 +35,40 @@ if [ "${1:-}" = --source-only ]; then
     printf '%s\n' "$GLUON_HELPER_SOURCE"
     exit 0
 fi
-[ "$#" -eq 0 ] || { echo 'Usage: build-steam-helper.sh [--source-only]' >&2; exit 2; }
-[ -f "$WINE_OBJ/Makefile" ] && [ -x "$WINE_OBJ/tools/makedep" ] || {
-    echo 'The configured Wine build and its makedep tool are required.' >&2; exit 1;
+[ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && [ "$1" = --packaged ]; } || {
+    echo 'Usage: build-steam-helper.sh [--source-only|--packaged]' >&2; exit 2;
 }
 
-# Reuse Wine's configured PE compilers, include directories and import libraries.
-# Add one program to its generated dependency graph, then request only its two
-# PE targets. Unlike the Proton fork's external-module extension, this works
-# with the published Wine 11 makedep without changing that tool or bridge DLLs.
-[ -d "$WINE_SRC/include" ] || { echo 'Wine source headers are required.' >&2; exit 1; }
-mkdir -p "$WINE_SRC/$GLUON_HELPER_MODULE"
-cp "$GLUON_HELPER_SOURCE/steam.c" "$GLUON_HELPER_SOURCE/Makefile.in" "$WINE_SRC/$GLUON_HELPER_MODULE/"
-python3 - "$WINE_OBJ/Makefile" "$GLUON_HELPER_MODULE" <<'PY'
+if [ "${1:-}" = --packaged ]; then
+    # The installed developer tools retain the same headers, startup code and
+    # import libraries as the compiled runtime. Rebuild this one PE program
+    # without requiring Wine's original object directory.
+    for tool in "$OUT/bin/winegcc" "$OUT/bin/winebuild" "$WORK/llvm-mingw/bin/clang"; do
+        [ -x "$tool" ] || { echo "Missing packaged helper build tool: $tool" >&2; exit 1; }
+    done
+    [ -f "$OUT/include/wine/debug.h" ] || { echo 'Packaged Wine headers are required.' >&2; exit 1; }
+    export PATH="$OUT/bin:$WORK/llvm-mingw/bin:$PATH"
+    for arch in i386 x86_64; do
+        target=i686-w64-mingw32
+        [ "$arch" != x86_64 ] || target=x86_64-w64-mingw32
+        directory="$GLUON_HELPER_SOURCE/$arch-windows"
+        mkdir -p "$directory"
+        "$OUT/bin/winegcc" -b "$target" --winebuild "$OUT/bin/winebuild" \
+            -O2 -mwindows -Wl,--wine-builtin -I"$OUT/include" \
+            "$GLUON_HELPER_SOURCE/steam.c" -o "$directory/steam.exe" \
+            -luser32 -ladvapi32 -lshlwapi -lshell32 -lmsi -lole32
+    done
+    compiled="$GLUON_HELPER_SOURCE"
+else
+    [ -f "$WINE_OBJ/Makefile" ] && [ -x "$WINE_OBJ/tools/makedep" ] || {
+        echo 'The configured Wine build and its makedep tool are required.' >&2; exit 1;
+    }
+    # Reuse Wine's configured PE compilers, include directories and import
+    # libraries, and request only the helper's two PE targets.
+    [ -d "$WINE_SRC/include" ] || { echo 'Wine source headers are required.' >&2; exit 1; }
+    mkdir -p "$WINE_SRC/$GLUON_HELPER_MODULE"
+    cp "$GLUON_HELPER_SOURCE/steam.c" "$GLUON_HELPER_SOURCE/Makefile.in" "$WINE_SRC/$GLUON_HELPER_MODULE/"
+    python3 - "$WINE_OBJ/Makefile" "$GLUON_HELPER_MODULE" <<'PY'
 from pathlib import Path
 import re
 import sys
@@ -60,13 +81,15 @@ if module not in match.group(1).replace('\\\n', ' ').split():
     source = source[:match.start(1)] + module + ' ' + source[match.start(1):]
     path.write_text(source)
 PY
-(cd "$WINE_OBJ" && ./tools/makedep)
-make -C "$WINE_OBJ" -j"$JOBS" \
-    "$GLUON_HELPER_MODULE/i386-windows/steam.exe" \
-    "$GLUON_HELPER_MODULE/x86_64-windows/steam.exe"
+    (cd "$WINE_OBJ" && ./tools/makedep)
+    make -C "$WINE_OBJ" -j"$JOBS" \
+        "$GLUON_HELPER_MODULE/i386-windows/steam.exe" \
+        "$GLUON_HELPER_MODULE/x86_64-windows/steam.exe"
+    compiled="$WINE_OBJ/$GLUON_HELPER_MODULE"
+fi
 
 for arch in i386 x86_64; do
-    binary="$WINE_OBJ/$GLUON_HELPER_MODULE/$arch-windows/steam.exe"
+    binary="$compiled/$arch-windows/steam.exe"
     [ -f "$binary" ] || { echo "Missing rebuilt $arch steam.exe" >&2; exit 1; }
     install -m 644 "$binary" "$OUT/lib/wine/$arch-windows/steam.exe"
 done
