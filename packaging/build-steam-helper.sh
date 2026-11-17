@@ -54,7 +54,7 @@ if [ "${1:-}" = --packaged ]; then
         directory="$GLUON_HELPER_SOURCE/$arch-windows"
         mkdir -p "$directory"
         "$OUT/bin/winegcc" -b "$target" --winebuild "$OUT/bin/winebuild" \
-            -O2 -mwindows -Wl,--wine-builtin -I"$OUT/include" \
+            -O2 -mwindows -D__WINESRC__ -Wl,--wine-builtin -I"$OUT/include" \
             "$GLUON_HELPER_SOURCE/steam.c" -o "$directory/steam.exe" \
             -luser32 -ladvapi32 -lshlwapi -lshell32 -lmsi -lole32
     done
