@@ -264,6 +264,26 @@ class LauncherLifecycleTests(unittest.TestCase):
         self.assertFalse((self.compat / ".gluon-steam-bridge").exists())
         self.assertFalse(any(event["event"] == "game" for event in self.events()))
 
+    def test_runtime_upgrade_refreshes_packaged_bridge_and_preserves_local_files(self):
+        self.prepare("bridge-refresh", bridge=True)
+        relative = Path("lib/wine/x86_64-windows")
+        previous = self.home / "runtime/gluon-runtime-previous" / relative
+        previous.mkdir(parents=True)
+        (previous / "steam.exe").write_bytes(b"previous helper")
+        (previous / "lsteamclient.dll").write_bytes(b"previous bridge")
+        (self.runtime / ".gluon-runtime-build-key").write_text("new build\n")
+        (self.compat / ".gluon-steam-bridge").touch()
+        system = self.prefix / "drive_c/windows/system32"
+        (system / "steam.exe").write_bytes(b"previous helper")
+        (system / "lsteamclient.dll").write_bytes(b"local replacement")
+
+        self.start()
+        output = self.process.communicate(timeout=8)
+        self.assertEqual(self.process.returncode, 0, output)
+        self.assertEqual((system / "steam.exe").read_bytes(), (self.runtime / relative / "steam.exe").read_bytes())
+        self.assertEqual((system / "lsteamclient.dll").read_bytes(), b"local replacement")
+        self.assertEqual((self.compat / ".gluon-steam-bridge-revision").read_text(), "new build\n")
+
 
 if __name__ == "__main__":
     unittest.main()

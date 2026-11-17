@@ -117,7 +117,7 @@ static WCHAR command[1024];
 static int fail_allocation, allocation_index, conversion_failure, dos_failure;
 static int create_failure, fixup_copy, shell_failure, hide_window;
 static HRESULT com_status;
-static unsigned com_acquired, com_released, thread_closed, process_closed, launched, written;
+static unsigned com_calls, com_acquired, com_released, thread_closed, process_closed, launched, written;
 static DWORD last_error;
 struct owned_ptr { void *ptr; int heap; };
 static struct owned_ptr owned[64];
@@ -178,6 +178,7 @@ static void SetLastError(DWORD value) { last_error = value; }
 static HRESULT CoInitialize(void *reserved)
 {
     (void)reserved;
+    ++com_calls;
     if (SUCCEEDED(com_status)) ++com_acquired;
     return com_status;
 }
@@ -211,8 +212,10 @@ static WCHAR *wine_get_dos_file_name(const char *input)
 }
 static DWORD_PTR SHGetFileInfoW(const WCHAR *path, DWORD attr, SHFILEINFOW *info, UINT size, UINT flags)
 {
-    (void)attr; (void)info; (void)size; (void)flags;
+    (void)attr; (void)info; (void)size;
     assert(path);
+    assert(flags == SHGFI_EXETYPE);
+    assert(!com_calls);
     return 1;
 }
 static INT_PTR ShellExecuteW(void *window, const WCHAR *verb, WCHAR *path,
@@ -220,6 +223,7 @@ static INT_PTR ShellExecuteW(void *window, const WCHAR *verb, WCHAR *path,
 {
     (void)window; (void)verb; (void)params; (void)directory; (void)show;
     assert(path && *path);
+    assert(com_calls == 1 && com_acquired == (unsigned)SUCCEEDED(com_status) && !com_released);
     ++launched;
     return shell_failure ? 2 : 42;
 }
@@ -237,6 +241,7 @@ static BOOL CreateProcessW(void *app, WCHAR *cmdline, void *a, void *b, BOOL inh
 {
     (void)app; (void)a; (void)b; (void)inherit; (void)flags; (void)env; (void)cwd;
     assert(cmdline && *cmdline);
+    assert(!com_calls);
     assert(!hide_window || (si->dwFlags & STARTF_USESHOWWINDOW));
     ++launched;
     last_error = create_failure ? 123 : 0;
@@ -284,7 +289,7 @@ static int launch_case(const char *label, const WCHAR *input, int allocation_fai
     HANDLE process;
     BOOL await = 42;
     wcscpy(command, input);
-    allocation_index = com_acquired = com_released = thread_closed = process_closed = launched = 0;
+    allocation_index = com_calls = com_acquired = com_released = thread_closed = process_closed = launched = 0;
     fail_allocation = allocation_fail;
     conversion_failure = conversion_fail;
     dos_failure = dos_fail;
@@ -319,8 +324,9 @@ int main(void)
         if (launch_case("create failed", L"steam.exe /fixture.exe", 0, 0, 0, 1, 0, 0, 0)) return 1;
         if (launch_case("fixed path failed", L"steam.exe /fixture.exe", 0, 0, 0, 1, 1, 0, 0)) return 1;
         if (launch_case("fixed path", L"steam.exe /fixture.exe", 0, 0, 0, 0, 1, 0, 0)) return 1;
-        if (launch_case("COM unavailable", L"steam.exe /fixture.exe", 0, 0, 0, 0, 0, 0, -2)) return 1;
+        if (launch_case("COM unavailable", L"steam.exe /fixture.txt", 0, 0, 0, 0, 0, 0, -2)) return 1;
         if (launch_case("shell", L"steam.exe /fixture.txt --arg", 0, 0, 0, 0, 0, 0, 0)) return 1;
+        if (launch_case("shell with COM already initialized", L"steam.exe C:\\fixture.txt", 0, 0, 0, 0, 0, 0, 1)) return 1;
         if (launch_case("shell failed", L"steam.exe /fixture.txt", 0, 0, 0, 0, 0, 1, 0)) return 1;
         if (launch_case("conversion size", L"steam.exe /fixture.exe", 0, 1, 0, 0, 0, 0, 0)) return 1;
         if (launch_case("conversion result", L"steam.exe /fixture.exe", 0, 2, 0, 0, 0, 0, 0)) return 1;
@@ -338,7 +344,7 @@ int main(void)
         if (check_clean("library files")) return 1;
     }
     assert(written == 64);
-    puts("Steam helper ownership passed 64 restart cycles and 1216 launch/file cases");
+    puts("Steam helper ownership and deferred COM passed 64 restart cycles");
     return 0;
 }
 '''
@@ -388,6 +394,13 @@ def main():
                         ("owned allocation(s) remain", "unmatched COM initialization")):
                     raise ValueError("missed omitted-cleanup negative control: " + cleanup + "\n" + result.stderr)
             print("All seven omitted-cleanup negative controls were detected")
+            initialization = "com_result = CoInitialize(NULL);"
+            probe = "console = SHGetFileInfoW("
+            mutant = helper.replace(initialization, "", 1).replace(probe, initialization + "\n        " + probe, 1)
+            result = run_fixture(mutant, directory, "eager-com")
+            if result.returncode == 0 or "!com_calls" not in result.stderr:
+                raise ValueError("missed eager COM initialization negative control:\n" + result.stderr)
+            print("Eager COM initialization negative control was detected")
     return 0
 
 

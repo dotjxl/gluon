@@ -35,7 +35,7 @@
          memcpy(scratchW, start, argv0_len * sizeof(WCHAR));
          scratchW[argv0_len] = '\0';
  
-@@ -487,22 +493,22 @@
+@@ -487,22 +493,20 @@
          if (!r)
          {
              WINE_ERR("Char conversion size failed?\n");
@@ -63,12 +63,10 @@
 +        }
 +
 +        if (!(dos = wine_get_dos_file_name(scratchA))) goto conversion_done;
-+
-+        com_result = CoInitialize(NULL);
  
          console = SHGetFileInfoW(dos, 0, &sfi, sizeof(sfi), SHGFI_EXETYPE);
          if (console)
-@@ -511,13 +517,19 @@
+@@ -511,13 +515,19 @@
                  flags |= CREATE_NEW_CONSOLE;
          }
  
@@ -90,7 +88,18 @@
      }
  
  run:
-@@ -622,11 +634,12 @@
+@@ -593,6 +603,10 @@
+         unsigned int retry_count = 0;
+         INT_PTR ret;
+
++        /* Wine's SHGFI_EXETYPE probe only reads the executable type.
++         * Load COM for shell associations after we know it is needed. */
++        com_result = CoInitialize(NULL);
++
+         if (*executable_name_end != '\0')
+         {
+             *executable_name_end = '\0';
+@@ -622,11 +636,12 @@
              }
              break;
          }
@@ -104,7 +113,7 @@
  
          if (hide_window)
          {
-@@ -634,16 +647,25 @@
+@@ -634,16 +649,25 @@
              si.wShowWindow = SW_HIDE;
          }
  
@@ -137,7 +146,7 @@
  }
  
  /* Forward stub steam.exe commands to the native steam client */
-@@ -811,6 +833,7 @@
+@@ -811,6 +835,7 @@
  
      pos += strappend( &buf, &buf_size, pos, "}\n" );
      write_file( L"C:\\Program Files (x86)\\Steam\\steamapps\\libraryfolders.vdf", buf, pos );
@@ -145,7 +154,7 @@
  }
  
  #ifndef DIRECTORY_QUERY
-@@ -917,6 +940,7 @@
+@@ -917,6 +942,7 @@
      HANDLE event2 = INVALID_HANDLE_VALUE;
      HANDLE event = INVALID_HANDLE_VALUE;
      HANDLE child = INVALID_HANDLE_VALUE;
@@ -153,7 +162,7 @@
      BOOL game_process = FALSE;
      const char *sgi;
      DWORD rc = 0;
-@@ -939,7 +963,8 @@
+@@ -939,7 +965,8 @@
          /* Create desktop window in main thread to prevent race with background thread. */
          GetDesktopWindow();
  
@@ -163,7 +172,7 @@
  
          set_active_process_pid();
          set_gamingrepair_succeeded(sgi);
-@@ -994,8 +1019,8 @@
+@@ -994,8 +1021,8 @@
              wait_handle = child;
          }
  

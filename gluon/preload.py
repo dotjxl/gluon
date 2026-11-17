@@ -10,8 +10,6 @@ import subprocess
 import sys
 import tempfile
 
-from . import steam
-
 _MIB = 1024 * 1024
 _RUNTIME_STARTUP_FILES = (
     "bin/wine", "bin/wineserver", "lib/wine/x86_64-unix/wine", "lib/wine/x86_64-unix/ntdll.so",
@@ -22,9 +20,8 @@ _RUNTIME_STARTUP_FILES = (
     "lib/wine/x86_64-windows/dxgi.dll", "lib/wine/x86_64-windows/d3d11.dll",
 )
 _CHROMIUM_STARTUP_FILES = (
-    "icudtl.dat", "snapshot_blob.bin", "v8_context_snapshot.bin", "resources.pak",
+    "resources/app.asar", "icudtl.dat", "snapshot_blob.bin", "v8_context_snapshot.bin", "resources.pak",
     "chrome_100_percent.pak", "chrome_200_percent.pak", "ffmpeg.dll", "d3dcompiler_47.dll",
-    "resources/app.asar",
 )
 
 
@@ -45,16 +42,16 @@ def _advise(path, limit):
     return 0
 
 
-def _warm_game(home, exe):
-    if not enabled(home):
+def _advise_game(exe, executable_limit, asset_limit, allowed=None):
+    if allowed is not None and not allowed():
         return
-    _advise(exe, 256 * _MIB)
+    _advise(exe, executable_limit)
     folder = exe.parent
     if not ((folder / "chrome_100_percent.pak").is_file() or (folder / "resources/app.asar").is_file()):
         return
-    remaining = 48 * _MIB
+    remaining = asset_limit
     for name in _CHROMIUM_STARTUP_FILES:
-        if remaining <= 0 or not enabled(home):
+        if remaining <= 0 or (allowed is not None and not allowed()):
             break
         path = folder / name
         # Refuse linked subdirectories as well as linked files. Only warm
@@ -64,7 +61,22 @@ def _warm_game(home, exe):
         remaining -= _advise(path, remaining)
 
 
+def _warm_game(home, exe):
+    _advise_game(exe, 256 * _MIB, 48 * _MIB, lambda: enabled(home))
+
+
+def warm_for_launch(program):
+    """Give the current executable and its startup assets a head start."""
+    if sys.platform != "darwin" or os.environ.get("GLUON_LAUNCH_PREFETCH") == "0" or not program:
+        return
+    exe = Path(program)
+    if exe.is_absolute() and exe.suffix.lower() == ".exe":
+        _advise_game(exe, 64 * _MIB, 32 * _MIB)
+
+
 def _recent_game(home):
+    from . import steam
+
     try:
         latest = max((home / "logs").glob("launch-*.log"), key=lambda item: item.stat().st_mtime)
         with os.fdopen(os.open(latest, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as log:

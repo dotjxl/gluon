@@ -10,6 +10,10 @@ import time
 
 def prepare(args):
     started = time.perf_counter()
+    if args.game_session and args.kind == 'wine':
+        from . import preload
+        preload.warm_for_launch(args.program)
+    prefetched = time.perf_counter()
     mode = 'none'
     if os.environ.get('GLUON_NATIVE_CLOUD') == '1':
         from . import cloud, steamplay
@@ -51,8 +55,9 @@ def prepare(args):
         if '\n' in value or '\r' in value:
             raise ValueError('A launch path contains an unsupported newline')
         print(key + '=' + value)
-    print('gluon: launch preparation: cloud %.1f ms, overlay/bundle %.1f ms' %
-          ((checked - started) * 1000, (time.perf_counter() - checked) * 1000), file=sys.stderr)
+    print('gluon: launch preparation: cloud %.1f ms, overlay/bundle %.1f ms, read-ahead request %.1f ms' %
+          ((checked - prefetched) * 1000, (time.perf_counter() - checked) * 1000,
+           (prefetched - started) * 1000), file=sys.stderr)
 
 
 def main():
@@ -60,6 +65,7 @@ def main():
     for name in ('home', 'appid', 'compat', 'runtime', 'kind', 'fallback-name'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--steamapps')
+    parser.add_argument('--program')
     parser.add_argument('--game-session', action='store_true')
     args = parser.parse_args()
     try:
