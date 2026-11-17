@@ -50,25 +50,17 @@ def _icon_key(source: Optional[Path]):
 
 def _build_icon(source: Path, resources: Path) -> bool:
     resources.mkdir(parents=True, exist_ok=True)
-    iconset = resources / 'Game.iconset'
-    iconset.mkdir()
     try:
-        # The cached Steam icon is normally 32x32. Supply standard and retina
-        # representations for the system's small Game Mode and menu icons.
-        for pixels, name in ((32, 'icon_32x32.png'), (64, 'icon_32x32@2x.png'),
-                             (128, 'icon_128x128.png')):
-            subprocess.run(['/usr/bin/sips', '-z', str(pixels), str(pixels), '-s', 'format', 'png',
-                            str(source), '--out', str(iconset / name)],
-                           check=True, capture_output=True, timeout=10)
-        subprocess.run(['/usr/bin/iconutil', '-c', 'icns', str(iconset), '-o', str(resources / ICON)],
+        # Give macOS one scalable icon for the Dock and menu bar. Convert and
+        # package it in one process on the first launch.
+        subprocess.run(['/usr/bin/sips', '-z', '128', '128', '-s', 'format', 'icns',
+                        str(source), '--out', str(resources / ICON)],
                        check=True, capture_output=True, timeout=10)
         return (resources / ICON).is_file()
     except (OSError, subprocess.SubprocessError) as error:
         print('gluon: cached game icon could not be converted: %s' % error, file=sys.stderr)
         (resources / ICON).unlink(missing_ok=True)
         return False
-    finally:
-        shutil.rmtree(iconset, ignore_errors=True)
 
 
 def game_name(steamapps: Optional[str], appid: str, fallback: str) -> str:

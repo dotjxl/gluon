@@ -68,8 +68,19 @@ if [ -n "$game_session" ] && [ "${GLUON_LAUNCHER_HOST:-}" != 1 ] && [ -z "$GLUON
     fi
 fi
 
+log_timestamp=""
+log_second=""
+stamp_log() {
+    local second="$SECONDS"
+    if [ "$log_second" != "$second" ]; then
+        log_timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+        log_second="$second"
+    fi
+}
+
 log() {
-    printf '%s [%s] %s\n' "${log_timestamp:-$(date '+%Y-%m-%d %H:%M:%S')}" "$$" "$*" >> "$LOG"
+    stamp_log
+    printf '%s [%s] %s\n' "$log_timestamp" "$$" "$*" >> "$LOG"
 }
 
 notify() {
@@ -87,9 +98,7 @@ fail() {
     exit 1
 }
 
-# These entries describe one startup snapshot. Reuse its timestamp rather than
-# spawning a date process for every inherited Steam variable.
-log_timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+# Log calls in the same second share a timestamp, including this snapshot.
 log "---- invoked: $0"
 # Verbose snapshots may include private launch options. Never log them by default.
 if [ "${GLUON_LOG_ENV:-0}" = 1 ]; then
@@ -106,7 +115,6 @@ if [ "${GLUON_LOG_ENV:-0}" = 1 ]; then
         esac
     done < <(compgen -e)
 fi
-unset log_timestamp
 
 helper_lib="$GLUON_HOME/lib"
 launcher_parent="${0%/*}"
@@ -550,7 +558,8 @@ keep_awake() {
     /usr/bin/caffeinate -d -i -w "$$" >/dev/null 2>&1 &
 }
 
-printf '==== %s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$exe" >> "$WINE_LOG"
+stamp_log
+printf '==== %s  %s\n' "$log_timestamp" "$exe" >> "$WINE_LOG"
 started=$SECONDS
 # Get the byte offset without reading all earlier sessions.
 log_start=$(/usr/bin/stat -f %z "$WINE_LOG" 2>/dev/null) || log_start=$(/usr/bin/stat -c %s "$WINE_LOG" 2>/dev/null)
@@ -600,7 +609,8 @@ else
             done
         done
         # The helper keeps its files where a Windows Steam install would be.
-        mkdir -p "$WINEPREFIX/drive_c/Program Files (x86)/Steam"
+        steam_directory="$WINEPREFIX/drive_c/Program Files (x86)/Steam"
+        [ -d "$steam_directory" ] || mkdir -p "$steam_directory"
         if [ ! -f "$compat/.gluon-steam-bridge" ]; then
             # Tell steam_api where the client library is: the bridge DLL.
             for value in SteamClientDll SteamClientDll64; do
