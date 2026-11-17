@@ -31,6 +31,13 @@ by the game, including an elevated fullscreen window that covers a display.
 That timer starts at Gluon's native host. Use Steam's Play click as the starting
 point when reporting the full launch time.
 
+On Play, the launch helper asks macOS to read ahead up to 64 MiB of the selected
+Windows executable and up to 32 MiB of Chromium startup assets, including the
+game's JavaScript archive when present. Wine can start while the kernel reads
+those files. Set `GLUON_LAUNCH_PREFETCH=0` in a game's launch options to disable
+these requests for that game. **Preload Wine** still controls warming when Steam
+opens.
+
 The Steam library reads the current stage for the selected game while it opens.
 The launcher records preparation, prefix work, and game startup in the existing
 log. The status clears when a game window appears, the session ends, or the
@@ -91,7 +98,9 @@ verify overlay initialization is retained or skipped in the intended child roles
 
 The resolver fallback also frees its temporary hostnames before returning a
 canonical-name error, preserving the original error and last-error semantics.
-The Steam helper is rebuilt from its pinned public source with balanced launch
-buffers, DOS-path allocations, COM references and detached thread handles. Its
-bridge DLLs retain their original ABI. Separate source-extracted sanitizer
-fixtures exercise repeated resolver failures and helper-managed restarts.
+The Steam helper starts recognized executables directly with CreateProcess.
+It initializes COM only for the ShellExecute fallback and releases it on
+return. The bridge DLLs retain their original ABI. After a runtime upgrade,
+Gluon replaces prefix bridge files that match a previously packaged runtime.
+Separate source-extracted sanitizer fixtures exercise both routes, ownership
+and helper-managed restarts.

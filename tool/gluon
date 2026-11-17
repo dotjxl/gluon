@@ -432,7 +432,7 @@ if [ "${GLUON_NATIVE_CLOUD:-}" = 1 ] || { [ -n "$game_session" ] && [ "$kind" = 
     launch_setup="$(PYTHONPATH="$helper_lib" PYTHONDONTWRITEBYTECODE=1 /usr/bin/arch -arm64 /usr/bin/python3 \
         -m gluon.launch --home "$GLUON_HOME" --appid "$appid" --compat "$compat" \
         --runtime "$runtime" --kind "$kind" --steamapps "${library:+$library/steamapps}" \
-        --fallback-name "${fallback_name%.exe}" ${game_session:+--game-session} \
+        --fallback-name "${fallback_name%.exe}" --program="$exe" ${game_session:+--game-session} \
         2>> "$LOG")" || fail "launch preparation failed (see $LOG)"
     while IFS= read -r setting; do
         case "$setting" in
@@ -558,6 +558,30 @@ keep_awake() {
     /usr/bin/caffeinate -d -i -w "$$" >/dev/null 2>&1 &
 }
 
+install_bridge_file() {
+    local relative="$1" destination="$2" previous temporary known=""
+    [ -f "$runtime/$relative" ] && [ ! -L "$destination" ] || return 0
+    if [ -e "$destination" ]; then
+        [ -n "$bridge_refresh" ] && [ -f "$destination" ] || return 0
+        cmp -s "$runtime/$relative" "$destination" && return 0
+        # Older Gluon runtimes are kept for rollback. Replace only copies
+        # known to match one of them, leaving local substitutions alone.
+        for previous in "$GLUON_HOME"/runtime/gluon-runtime-*; do
+            if [ ! -L "$previous" ] && cmp -s "$previous/$relative" "$destination"; then
+                known=1
+                break
+            fi
+        done
+        [ -n "$known" ] || return 0
+    fi
+    temporary=$(mktemp "${destination%/*}/.gluon-bridge.XXXXXX") || return 1
+    if cp -p "$runtime/$relative" "$temporary" && mv -f "$temporary" "$destination"; then
+        return 0
+    fi
+    rm -f "$temporary"
+    return 1
+}
+
 stamp_log
 printf '==== %s  %s\n' "$log_timestamp" "$exe" >> "$WINE_LOG"
 started=$SECONDS
@@ -599,15 +623,32 @@ else
     fi
     if [ -n "$steam_bridge" ]; then
         # The helper and the bridge DLL have to exist inside the prefix; a prefix made
-        # before the runtime carried them does not have them yet.
+        # before the runtime carried them does not have them yet. Only compare
+        # installed files on a packaged runtime change.
+        bridge_refresh=""
+        bridge_key=""
+        bridge_installed=""
+        bridge_stamp="$compat/.gluon-steam-bridge-revision"
+        if [ -f "$runtime/.gluon-runtime-build-key" ]; then
+            IFS= read -r bridge_key < "$runtime/.gluon-runtime-build-key"
+        fi
+        if [ -f "$bridge_stamp" ] && [ ! -L "$bridge_stamp" ]; then
+            IFS= read -r bridge_installed < "$bridge_stamp"
+        fi
+        if [ -n "$bridge_key" ] && [ "$bridge_key" != "$bridge_installed" ]; then
+            bridge_refresh=1
+        fi
         for pair in "x86_64-windows:system32" "i386-windows:syswow64"; do
-            src="$runtime/lib/wine/${pair%%:*}"
             dst="$WINEPREFIX/drive_c/windows/${pair##*:}"
             [ -d "$dst" ] || continue
             for f in steam.exe lsteamclient.dll; do
-                [ -f "$src/$f" ] && [ ! -f "$dst/$f" ] && cp "$src/$f" "$dst/$f"
+                install_bridge_file "lib/wine/${pair%%:*}/$f" "$dst/$f" \
+                    || fail "could not stage the Steam bridge in the Wine prefix"
             done
         done
+        if [ -n "$bridge_refresh" ] && [ ! -L "$bridge_stamp" ]; then
+            printf '%s\n' "$bridge_key" > "$bridge_stamp"
+        fi
         # The helper keeps its files where a Windows Steam install would be.
         steam_directory="$WINEPREFIX/drive_c/Program Files (x86)/Steam"
         [ -d "$steam_directory" ] || mkdir -p "$steam_directory"

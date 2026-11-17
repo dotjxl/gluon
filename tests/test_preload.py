@@ -7,6 +7,25 @@ from gluon import preload
 
 
 class PreloadTests(unittest.TestCase):
+    def test_on_play_read_ahead_is_bounded_and_can_be_disabled(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            installation = Path(temporary)
+            game = installation / "Game.exe"
+            app_source = installation / "resources/app.asar"
+            app_source.parent.mkdir()
+            app_source.touch()
+            with patch.object(preload.sys, "platform", "darwin"), \
+                 patch.dict("os.environ", {"GLUON_LAUNCH_PREFETCH": "1"}), \
+                 patch.object(preload, "_advise", side_effect=lambda path, limit: limit) as advise:
+                preload.warm_for_launch(str(game))
+                self.assertEqual(advise.call_args_list[0].args, (game, 64 << 20))
+                self.assertEqual(advise.call_args_list[1].args, (app_source, 32 << 20))
+                self.assertEqual(advise.call_count, 2)
+                preload.warm_for_launch(r"C:\Games\Game.exe")
+                with patch.dict("os.environ", {"GLUON_LAUNCH_PREFETCH": "0"}):
+                    preload.warm_for_launch(str(game))
+                self.assertEqual(advise.call_count, 2)
+
     def test_game_read_ahead_caps_chromium_files_and_skips_linked_resources(self):
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)
